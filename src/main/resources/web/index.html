@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Easy Handshake Node</title>
+  <!-- SVG favicon: full HNS logo for modern browsers -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- ICO fallback for older browsers -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <img src="/hns-logo.svg" alt="Handshake" class="header-logo">
+      <h1>Easy Handshake</h1>
+      <span class="version" id="version">—</span>
+    </div>
+    <span class="status-badge" id="status-badge">Connecting...</span>
+  </header>
+
+  <div class="grid" id="stats-grid">
+    <div class="card">
+      <div class="card-label">Block Height</div>
+      <div class="card-value" id="stat-height">—</div>
+      <div class="card-sub">headers synced</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Block Data</div>
+      <div class="card-value" id="stat-block-tip">—</div>
+      <div class="card-sub">full blocks stored</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Database Size</div>
+      <div class="card-value" id="stat-db-size">—</div>
+      <div class="card-sub">on disk · LZ4 compressed</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Uptime</div>
+      <div class="card-value" id="stat-uptime">—</div>
+      <div class="card-sub">since last start</div>
+    </div>
+  </div>
+
+  <div class="section-title">API Endpoints</div>
+  <div class="api-links">
+    <a class="api-link" href="/api/status">/api/status</a>
+    <a class="api-link" href="/api/block/0">/api/block/{height}</a>
+    <a class="api-link" href="/block/0">/block/{hash|height}</a>
+    <a class="api-link" href="/header/0">/header/{hash|height}</a>
+    <a class="api-link" href="/tx/">/tx/{txhash}</a>
+    <a class="api-link" href="/coin/">/coin/{txhash}/{index}</a>
+    <span class="api-link planned">/api/name/{tld}<span class="tag tag-planned">planned</span></span>
+    <span class="api-link planned">/dns-query<span class="tag tag-planned">DoH · RFC 8484</span></span>
+  </div>
+  <div class="section-title">JSON-RPC (POST /)</div>
+  <div class="api-links">
+    <span class="api-link">getblockchaininfo</span>
+    <span class="api-link">getblock</span>
+    <span class="api-link">getblockbyheight</span>
+    <span class="api-link">getblockheader</span>
+    <span class="api-link">getbestblockhash</span>
+    <span class="api-link">getblockcount</span>
+    <span class="api-link">getblockhash</span>
+    <span class="api-link">getdifficulty</span>
+    <span class="api-link">getrawtransaction</span>
+    <span class="api-link">decoderawtransaction</span>
+    <span class="api-link">gettxout</span>
+    <span class="api-link">gettxoutsetinfo</span>
+    <span class="api-link">getinfo</span>
+    <span class="api-link">getnetworkinfo</span>
+    <span class="api-link">getmempoolinfo</span>
+    <span class="api-link">getrawmempool</span>
+  </div>
+
+  <div class="section-title">Features</div>
+  <div class="feature-grid">
+    <div class="feature on">
+      <span class="feature-dot"></span>
+      <span class="feature-name">Full Node</span>
+      <span class="feature-desc">Syncing &amp; serving blocks to peers</span>
+    </div>
+    <div class="feature on">
+      <span class="feature-dot"></span>
+      <span class="feature-name">Chain Follower</span>
+      <span class="feature-desc">Tracking new blocks every 60s</span>
+    </div>
+    <div class="feature on">
+      <span class="feature-dot"></span>
+      <span class="feature-name">Peer Server</span>
+      <span class="feature-desc">Accepting inbound connections on port 44806</span>
+    </div>
+    <div class="feature planned">
+      <span class="feature-dot"></span>
+      <span class="feature-name">DNS Resolver</span>
+      <span class="feature-desc">Resolve .wallet and all Handshake TLDs</span>
+    </div>
+    <div class="feature planned">
+      <span class="feature-dot"></span>
+      <span class="feature-name">Wallet</span>
+      <span class="feature-desc">Manage HNS addresses and names</span>
+    </div>
+    <div class="feature planned">
+      <span class="feature-dot"></span>
+      <span class="feature-name">Miner</span>
+      <span class="feature-desc">CPU / Stratum mining support</span>
+    </div>
+  </div>
+
+  <footer>
+    <span>easy-handshake · Handshake blockchain node</span>
+    <span id="last-updated">—</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
