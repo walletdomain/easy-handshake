@@ -5,7 +5,6 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -35,8 +34,12 @@ public class HNSPeer {
     private static final int    READ_TIMEOUT_MS     = 60_000;
 
     /** Mainnet genesis block hash. */
-    public static final byte[] GENESIS_HASH = hexToBytes(
-            "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0");
+    public static final byte[] GENESIS_HASH = {
+            (byte)0x5b,(byte)0x6e,(byte)0xf2,(byte)0xd3,(byte)0xc1,(byte)0xf3,(byte)0xcd,(byte)0xca,
+            (byte)0xdf,(byte)0xd9,(byte)0xa0,(byte)0x30,(byte)0xba,(byte)0x18,(byte)0x11,(byte)0xef,
+            (byte)0xdd,(byte)0x17,(byte)0x74,(byte)0x0f,(byte)0x14,(byte)0xe1,(byte)0x66,(byte)0x48,
+            (byte)0x97,(byte)0x60,(byte)0x74,(byte)0x1d,(byte)0x07,(byte)0x59,(byte)0x92,(byte)0xe0
+    };
 
     /** All-zero stop hash for getheaders — means fetch as many as possible. */
     public static final byte[] ZERO_HASH = new byte[32];
@@ -49,15 +52,15 @@ public class HNSPeer {
     public static final int NONCE_SIZE  = 24;  // consensus.NONCE_SIZE (extraNonce)
 
     // -------------------------------------------------------------------------
-    // InvItem types
+    // InvItem types — full protocol vocabulary kept for future mempool/wallet use
     // -------------------------------------------------------------------------
 
-    public static final int INV_TX             = 1;
+    @SuppressWarnings("unused") public static final int INV_TX             = 1;
     public static final int INV_BLOCK          = 2;
-    public static final int INV_FILTERED_BLOCK = 3;
-    public static final int INV_CMPCT_BLOCK    = 4;
-    public static final int INV_CLAIM          = 5;
-    public static final int INV_AIRDROP        = 6;
+    @SuppressWarnings("unused") public static final int INV_FILTERED_BLOCK = 3;
+    @SuppressWarnings("unused") public static final int INV_CMPCT_BLOCK    = 4;
+    @SuppressWarnings("unused") public static final int INV_CLAIM          = 5;
+    @SuppressWarnings("unused") public static final int INV_AIRDROP        = 6;
 
     // -------------------------------------------------------------------------
     // State
@@ -67,7 +70,6 @@ public class HNSPeer {
     private final BrontideState brontide;
     private final InputStream   in;
     private final OutputStream  out;
-    private final SecureRandom  rng = new SecureRandom();
 
     private boolean versionSent     = false;
     private boolean versionReceived = false;
@@ -96,8 +98,8 @@ public class HNSPeer {
      * Constructor for INBOUND connections (we are the responder).
      * The brontide handshake has already been completed by PeerServer.
      */
-    public HNSPeer(Socket socket, InputStream in,
-                   OutputStream out,
+    public HNSPeer(Socket socket, java.io.InputStream in,
+                   java.io.OutputStream out,
                    BrontideState brontide, String remoteIp) throws Exception {
         // Create a minimal Peer wrapper for the inbound socket
         this.peer     = new Peer(socket, remoteIp);
@@ -111,11 +113,6 @@ public class HNSPeer {
     // Public API
     // -------------------------------------------------------------------------
 
-    /**
-     * Performs the version/verack P2P handshake.
-     * Sends our version, then processes incoming messages until both
-     * verack and the peer's version have been received.
-     */
     /**
      * VERSION/VERACK handshake for INBOUND connections (we are the responder).
      * We wait for the initiator's VERSION first, then send ours.
@@ -138,7 +135,7 @@ public class HNSPeer {
         verackSent = true;
 
         // Wait for their VERACK
-        while (!isHandshakeComplete()) {
+        while (isHandshakePending()) {
             if (System.currentTimeMillis() > deadline)
                 throw new Exception("Responder handshake timed out waiting for VERACK.");
             handleHandshakeMessage(readMessage());
@@ -148,13 +145,13 @@ public class HNSPeer {
     public void handshake() throws Exception {
         sendVersion();
         long deadline = System.currentTimeMillis() + READ_TIMEOUT_MS;
-        while (!isHandshakeComplete()) {
+        while (isHandshakePending()) {
             if (System.currentTimeMillis() > deadline)
                 throw new Exception("Version handshake timed out.");
             handleHandshakeMessage(readMessage());
         }
-        System.out.println("  [" + peer.seed.ipAddress() + "] P2P handshake complete."
-                + " peer=" + peerAgent + " height=" + peerHeight);
+        System.out.printf("  [%s] P2P OK (%s h=%d)%n",
+                peer.seed.ipAddress(), peerAgent, peerHeight);
     }
 
     /**
@@ -188,9 +185,7 @@ public class HNSPeer {
                     handlePing(msg.payload);
                     break;
                 default:
-                    System.out.println("  [" + peer.seed.ipAddress()
-                            + "] Ignoring " + msg.typeName()
-                            + " while waiting for HEADERS");
+                    // silently ignore unexpected messages while waiting for HEADERS
             }
         }
     }
@@ -236,6 +231,7 @@ public class HNSPeer {
      * @param blockHash the 32-byte hash of the block to request
      * @return the parsed HNSBlock
      */
+    @SuppressWarnings("unused") // used by wallet and on-demand block fetch (planned)
     public HNSBlock getBlock(byte[] blockHash) throws Exception {
         send(HNSMessage.TYPE_GETDATA, buildGetData(List.of(blockHash)));
 
@@ -254,9 +250,7 @@ public class HNSPeer {
                     handlePing(msg.payload);
                     break;
                 default:
-                    System.out.println("  [" + peer.seed.ipAddress()
-                            + "] Ignoring " + msg.typeName()
-                            + " while waiting for BLOCK");
+                    // silently ignore unexpected messages while waiting for BLOCK
             }
         }
     }
@@ -274,16 +268,8 @@ public class HNSPeer {
      */
     public void syncBlocks(List<byte[]> blockHashes, int startHeight,
                            BlockConsumer blockConsumer) throws Exception {
-        System.out.println("  [" + peer.seed.ipAddress()
-                + "] Starting block sync from height " + startHeight
-                + " (" + blockHashes.size() + " blocks)...");
-
         final int BATCH = 128;
         int total = blockHashes.size();
-
-        System.out.println("  [" + peer.seed.ipAddress()
-                + "] Starting block sync from height " + startHeight
-                + " (" + total + " blocks, batch=" + BATCH + ")...");
 
         // Drain any messages buffered since the version handshake
         // (SENDCMPCT, INV, etc.) before sending the first GETDATA
@@ -359,14 +345,6 @@ public class HNSPeer {
     }
 
     /**
-     * Drains any messages the peer has queued but we haven't read yet.
-     * Called between outer sync batches to prevent nonce desync from
-     * unsolicited peer messages (PING, INV, etc.) sitting in the stream.
-     *
-     * Uses a very short timeout — if nothing arrives within 200ms the
-     * stream is considered clean and we return.
-     */
-    /**
      * Sends GETADDR and collects peer addresses from the ADDR response.
      *
      * NetAddress wire format (88 bytes each):
@@ -379,6 +357,7 @@ public class HNSPeer {
      * @param maxWait ms to wait for ADDR response before giving up
      * @return list of discovered peers as Seed objects
      */
+    @SuppressWarnings("unused") // used by peer discovery (planned)
     public List<Seed> requestMorePeers(int maxWait) throws Exception {
         send(HNSMessage.TYPE_GETADDR, new byte[0]);
 
@@ -411,7 +390,8 @@ public class HNSPeer {
         int count = (int) vi[0];
         int pos   = (int) vi[1];
 
-        byte[] ZERO_KEY = new byte[33]; // all zeros = no key
+        @SuppressWarnings("MismatchedReadAndWriteOfArray") // intentional read-only zero sentinel
+        byte[] ZERO_KEY = new byte[33]; // all zeros = no brontide key
 
         for (int i = 0; i < count && pos + 88 <= payload.length; i++) {
             // time(8) + services(4) + hiServices(4) = 16 bytes
@@ -453,6 +433,7 @@ public class HNSPeer {
     }
 
     /** Base32 encoder (RFC 4648, a-z2-7) for brontide key encoding. */
+    @SuppressWarnings("DuplicatedCode") // same algorithm in NodeIdentity — kept separate for independence
     private static String base32Encode(byte[] data) {
         final String ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
         StringBuilder sb = new StringBuilder();
@@ -479,7 +460,8 @@ public class HNSPeer {
             return;
         }
         try {
-            while (true) {
+            long deadline = System.currentTimeMillis() + 200;
+            while (System.currentTimeMillis() < deadline) {
                 HNSMessage.Message msg = readMessage();
                 if (msg.type == HNSMessage.TYPE_PING)
                     handlePing(msg.payload);
@@ -569,14 +551,11 @@ public class HNSPeer {
                 HNSMessage.VersionInfo info = HNSMessage.parseVersion(msg.payload);
                 peerHeight = info.height;
                 peerAgent  = info.agent;
-                System.out.println("  [" + peer.seed.ipAddress()
-                        + "] VERSION: " + info);
                 versionReceived = true;
                 sendVerack();
                 break;
             }
             case HNSMessage.TYPE_VERACK:
-                System.out.println("  [" + peer.seed.ipAddress() + "] VERACK");
                 verackReceived = true;
                 break;
             case HNSMessage.TYPE_PING:
@@ -588,8 +567,8 @@ public class HNSPeer {
         }
     }
 
-    private boolean isHandshakeComplete() {
-        return versionSent && versionReceived && verackSent && verackReceived;
+    private boolean isHandshakePending() {
+        return !(versionSent && versionReceived && verackSent && verackReceived);
     }
 
     // -------------------------------------------------------------------------
@@ -747,6 +726,7 @@ public class HNSPeer {
         }
 
         /** Returns a copy of the raw 236-byte header for storage. */
+        @SuppressWarnings("unused") // used by database serialisation (planned)
         public byte[] toBytes() { return raw.clone(); }
 
         /**
@@ -890,7 +870,7 @@ public class HNSPeer {
         }
     }
 
-    static long[] decodeVarint(byte[] buf, int offset) {
+    public static long[] decodeVarint(byte[] buf, int offset) {
         int first = buf[offset] & 0xFF;
         if (first < 0xFD) {
             return new long[]{ first, 1 };
@@ -920,13 +900,6 @@ public class HNSPeer {
     // -------------------------------------------------------------------------
     // Utility helpers
     // -------------------------------------------------------------------------
-
-    static byte[] hexToBytes(String hex) {
-        byte[] result = new byte[hex.length() / 2];
-        for (int i = 0; i < result.length; i++)
-            result[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-        return result;
-    }
 
     static String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder();
@@ -1033,6 +1006,7 @@ public class HNSPeer {
             v[b] = Long.rotateRight(v[b] ^ v[c], 63);
         }
 
+        @SuppressWarnings("DuplicatedCode") // identical in Keccak256 — kept separate per class
         private static long leToLong(byte[] b, int off) {
             return (b[off  ] & 0xFFL)
                     | ((b[off+1] & 0xFFL) <<  8)
@@ -1079,7 +1053,6 @@ public class HNSPeer {
 
         public static byte[] hash(byte[] input) {
             int rate      = 136;  // (1600 - 512) / 8 = 136 bytes for SHA3-256
-            int capacity  = 64;   // 512 bits
             int outputLen = 32;
 
             // Padding: append 0x01, zero-pad to rate, set last byte |= 0x80
@@ -1132,6 +1105,7 @@ public class HNSPeer {
 
                 // Chi
                 for (int y = 0; y < 5; y++) {
+                    //noinspection ManualArrayCopy — not a copy; saving values for XOR
                     for (int x = 0; x < 5; x++)
                         b[x] = a[x + y*5];
                     for (int x = 0; x < 5; x++)
@@ -1143,6 +1117,7 @@ public class HNSPeer {
             }
         }
 
+        @SuppressWarnings("DuplicatedCode") // identical in Blake2b — kept separate per class
         private static long leToLong(byte[] b, int off) {
             return (b[off  ] & 0xFFL)
                     | ((b[off+1] & 0xFFL) <<  8)

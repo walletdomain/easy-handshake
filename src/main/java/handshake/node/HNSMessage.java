@@ -29,6 +29,10 @@ import java.util.Arrays;
  *   GETBLOCKTXN=24, BLOCKTXN=25, GETPROOF=26, PROOF=27,
  *   CLAIM=28, AIRDROP=29, UNKNOWN=30
  */
+// All message type constants and builder methods are part of the complete
+// Handshake P2P protocol vocabulary. Unused ones are kept for future use
+// by the mempool, DNS resolver, wallet, and mining components.
+@SuppressWarnings("unused")
 public class HNSMessage {
 
     // -------------------------------------------------------------------------

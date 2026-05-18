@@ -1,7 +1,6 @@
 package handshake.node;
 
 import handshake.database.Database;
-
 import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -12,10 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
  * Manages discovery and selection of Handshake brontide peers.
@@ -28,26 +24,27 @@ public class HNSPeerManager {
     private static final int POLL_THREADS    = 10;
 
     /**
-     * Data directory — uses the working directory so the node is fully
+     * Data directory — resolves to the working directory so the node is fully
      * self-contained and portable (runs from a USB drive, a VPS directory,
      * or any folder). All data files sit next to the JAR:
-     * .
+     *
      *   easy-handshake/
-     *   ├── handshake-node.jar
+     *   ├── easy-handshake.jar
      *   ├── node.key          ← permanent node identity
      *   ├── chain.mv.db       ← blockchain database
      *   ├── node.mv.db        ← node state (future)
      *   └── wallet.mv.db      ← wallet (future)
-     * .
+     *
      * To run from a USB drive:
      *   cd /path/to/usb
      *   java -jar easy-handshake.jar
      */
-    private static final String DB_DIR = System.getProperty("user.dir");
+    private static final String DB_DIR = new java.io.File(".").getAbsolutePath()
+            .replaceAll("\\.$", "").replaceAll("[/\\\\]$", "");
 
     private static final String DB_PATH_CHAIN  = DB_DIR + File.separator + "chain";
-    private static final String DB_PATH_NODE   = DB_DIR + File.separator + "node";
-    private static final String DB_PATH_WALLET = DB_DIR + File.separator + "wallet";
+    @SuppressWarnings("unused") private static final String DB_PATH_NODE   = DB_DIR + File.separator + "node";
+    @SuppressWarnings("unused") private static final String DB_PATH_WALLET = DB_DIR + File.separator + "wallet";
 
     private static final SecureRandom RNG = new SecureRandom();
 
@@ -82,6 +79,7 @@ public class HNSPeerManager {
     // -------------------------------------------------------------------------
 
     /** Public entry point for BlockSyncCoordinator to connect to a single seed. */
+    @SuppressWarnings("unused") // called by BlockSyncCoordinator via reflection-like dispatch
     public static Peer pollSeedPublic(Seed seed) {
         return pollSeed(seed);
     }
@@ -93,74 +91,55 @@ public class HNSPeerManager {
         byte[] remoteStaticPub;
         try {
             remoteStaticPub = base32Decode(seed.key());
-            if (remoteStaticPub.length != 33) {
-                System.out.println("  [" + ip + "] Bad key length: " + remoteStaticPub.length);
-                return null;
-            }
+            if (remoteStaticPub.length != 33) return null;
         } catch (Exception e) {
-            System.out.println("  [" + ip + "] Key decode failed: " + e.getMessage());
             return null;
         }
 
-        // Generate a fresh local static key for this session
         byte[] localStaticPriv = new byte[32];
         RNG.nextBytes(localStaticPriv);
 
         Socket socket = new Socket();
         try {
-            System.out.println("  [" + ip + "] Connecting on port " + seed.port() + "...");
             socket.connect(
                     new InetSocketAddress(seed.ipAddress(), seed.port()),
                     CONNECT_TIMEOUT);
             socket.setSoTimeout(CONNECT_TIMEOUT);
-            System.out.println("  [" + ip + "] TCP connected.");
 
             InputStream  in  = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
 
             BrontideState state = new BrontideState(localStaticPriv, remoteStaticPub);
             state.init();
-            state.mixHash(BrontideState.PROLOGUE.getBytes());
-            state.mixHash(remoteStaticPub);
 
             // Act 1
-            System.out.println("  [" + ip + "] Generating Act 1...");
             byte[] actOne = state.genActOne();
-            System.out.println("  [" + ip + "] Sending Act 1 (" + actOne.length + " bytes)...");
             out.write(actOne);
             out.flush();
-            System.out.println("  [" + ip + "] Act 1 sent. Waiting for Act 2...");
 
             // Act 2
             byte[] actTwo = in.readNBytes(BrontideState.ACT_TWO_SIZE);
-            System.out.println("  [" + ip + "] Received " + actTwo.length + " bytes for Act 2.");
             if (actTwo.length != BrontideState.ACT_TWO_SIZE) {
-                System.out.println("  [" + ip + "] Act 2 wrong size, expected "
-                        + BrontideState.ACT_TWO_SIZE + " got " + actTwo.length);
                 socket.close();
                 return null;
             }
-            boolean act2ok = state.recvActTwo(actTwo);
-            System.out.println("  [" + ip + "] Act 2 verify: " + (act2ok ? "OK" : "FAILED"));
-            if (!act2ok) {
+            if (!state.recvActTwo(actTwo)) {
                 socket.close();
                 return null;
             }
 
             // Act 3
-            System.out.println("  [" + ip + "] Sending Act 3...");
             byte[] actThree = state.genActThree();
             out.write(actThree);
             out.flush();
-            System.out.println("  [" + ip + "] Act 3 sent (" + actThree.length + " bytes).");
 
             long elapsed = System.currentTimeMillis() - start;
-            System.out.println("  [" + ip + "] Brontide handshake COMPLETE (" + elapsed + "ms)");
+            // brontide OK — suppress success messages to reduce noise
             return new Peer(seed, elapsed, socket, state);
 
         } catch (Exception e) {
-            System.out.println("  [" + ip + "] ERROR: " + e.getClass().getSimpleName()
-                    + ": " + e.getMessage());
+            System.out.printf("  [%s] failed: %s%n", ip,
+                    e.getClass().getSimpleName());
             try { socket.close(); } catch (Exception ignored) {}
             return null;
         }
@@ -201,6 +180,7 @@ public class HNSPeerManager {
     // Select the fastest authenticated peer
     // -------------------------------------------------------------------------
 
+    @SuppressWarnings("unused") // called by ChainFollower
     public static Peer selectBestPeer(List<Peer> peers) {
         return peers.isEmpty() ? null : peers.getFirst();
     }
@@ -209,7 +189,7 @@ public class HNSPeerManager {
     // Main
     // -------------------------------------------------------------------------
 
-    static void main() throws Exception {
+    public static void main(String[] args) throws Exception {
         System.out.println("Opening database at " + DB_PATH_CHAIN + " ...");
 
         // Load or generate our permanent node identity
@@ -231,14 +211,40 @@ public class HNSPeerManager {
             PeerServer server = new PeerServer(identity, db);
             server.start();
 
+            // ── Phase 4: Embedded HTTP dashboard and REST API ─────────────
+            NodeHttpServer httpServer = new NodeHttpServer(db);
+            httpServer.start();
+
+            // ── Phase 5: Follow the live chain ────────────────────────────
+            // Background thread checks for new blocks every 60 seconds
+            ChainFollower follower = new ChainFollower(db);
+            follower.start();
+
+            // ── Phase 6: DNS resolver ─────────────────────────────────────
+            // Authoritative (port 5349) + recursive (port 5350)
+            // Name index builds in background from block database
+            handshake.node.dns.DnsServer dnsServer =
+                    new handshake.node.dns.DnsServer(db);
+            dnsServer.start();
+
+            // Wire DNS server into ChainFollower so new blocks update the name index
+            follower.setDnsServer(dnsServer);
+
             System.out.println("\nNode is running. Press Ctrl+C to stop.");
-            System.out.println("Brontide address: connect to port 44806");
+            System.out.println("Dashboard:     http://localhost:"
+                    + NodeHttpServer.DEFAULT_PORT);
+            System.out.println("Brontide:      port 44806");
+            System.out.println("DNS Auth:      port 5349");
+            System.out.println("DNS Recursive: port 5350");
 
             // Keep running until interrupted
             try {
                 Thread.currentThread().join();
             } catch (InterruptedException e) {
                 System.out.println("Shutting down...");
+                dnsServer.stop();
+                follower.stop();
+                httpServer.stop();
                 server.stop();
             }
         }
@@ -250,32 +256,25 @@ public class HNSPeerManager {
 
     private static void syncHeaderPhase(Database db) throws Exception {
         final int MAX_RETRIES   = 10;
-        final int RETRY_DELAY_S = 5;
-
-        // Quick check — if we have headers and block data is also at tip,
-        // skip header sync entirely without opening any connections
-        int dbTip = db.getTipHeight();
-        if (dbTip > 0 && db.getBlockDataTip() >= dbTip) {
-            System.out.println("[Header sync] Already at tip (" + dbTip
-                    + ") — skipping (no connection needed).");
-            return;
-        }
 
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             int tipHeight = db.getTipHeight();
-            System.out.println("\n[Header sync] Tip: "
+            System.out.println("\n[Header sync] Local tip: "
                     + (tipHeight == -1 ? "(empty)" : tipHeight)
                     + " | Attempt " + attempt + "/" + MAX_RETRIES);
 
-            HNSPeer p = connectToBestPeer();
+            HNSPeer p = connectToBestPeer(tipHeight);
             if (p == null) {
-                waitBeforeRetry(attempt, RETRY_DELAY_S);
+                waitBeforeRetry(attempt);
                 continue;
             }
 
             try {
-                // Check if headers are already at chain tip
-                if (tipHeight >= p.getPeerHeight() - 1) {
+                int peerHeight = p.getPeerHeight();
+                System.out.println("[Header sync] Peer height: " + peerHeight);
+
+                // Already at tip — no sync needed
+                if (tipHeight >= peerHeight - 1) {
                     System.out.println("[Header sync] Already at tip ("
                             + tipHeight + ") — skipping.");
                     p.peer.socket.close();
@@ -305,7 +304,7 @@ public class HNSPeerManager {
                             + " headers but peer height is " + p.getPeerHeight()
                             + " — peer may have served wrong chain, retrying.");
                     p.peer.socket.close();
-                    waitBeforeRetry(attempt, RETRY_DELAY_S);
+                    waitBeforeRetry(attempt);
                     continue;
                 }
 
@@ -325,7 +324,7 @@ public class HNSPeerManager {
                         + e.getClass().getSimpleName() + ": " + e.getMessage());
                 try { p.peer.socket.close(); } catch (Exception ignored) {}
                 if (attempt == MAX_RETRIES) throw e;
-                waitBeforeRetry(attempt, RETRY_DELAY_S);
+                waitBeforeRetry(attempt);
             }
         }
     }
@@ -335,8 +334,41 @@ public class HNSPeerManager {
     // -------------------------------------------------------------------------
 
     private static void syncBlockPhase(Database db) throws Exception {
-        final int MAX_RETRIES   = 200; // allow many reconnects for long sync
-        final int RETRY_DELAY_S = 5;
+        final int MAX_RETRIES   = 200;
+
+        // Diagnostic and sanity check
+        {
+            int contigTip = db.getBlockDataTip();
+            int hdrTip    = db.getTipHeight();
+            System.out.println("[Block sync] Contiguous block tip: " + contigTip);
+            System.out.println("[Block sync] Header tip:           " + hdrTip);
+
+            // One-time cleanup: remove any blocks stored above the header tip
+            // (can occur when headers were re-synced to a lower height)
+            if (contigTip > hdrTip) {
+                System.out.println("[Block sync] WARNING: block tip > header tip."
+                        + " Recomputing contiguous tip...");
+                db.recomputeBlockTip();
+                db.removeBlocksAbove(hdrTip);
+                contigTip = db.getBlockDataTip();
+                System.out.println("[Block sync] Recomputed contiguous block tip: "
+                        + contigTip);
+            }
+
+            if (contigTip < hdrTip) {
+                System.out.println("[Block sync] Scanning for first gap above height "
+                        + contigTip + "...");
+                int gapAt = -1;
+                for (int h = contigTip + 1;
+                     h <= Math.min(contigTip + 10_000, hdrTip); h++) {
+                    if (db.getRawBlock(h) == null) { gapAt = h; break; }
+                }
+                if (gapAt >= 0)
+                    System.out.println("[Block sync] First missing block: " + gapAt);
+                else
+                    System.out.println("[Block sync] No gap in first 10,000 above tip.");
+            }
+        }
 
         int lastBlockTip = -1;
 
@@ -367,7 +399,7 @@ public class HNSPeerManager {
             List<Peer> peers = discoverPeers();
             if (peers.isEmpty()) {
                 System.out.println("[Block sync] No peers responded.");
-                waitBeforeRetry(attempt, RETRY_DELAY_S);
+                waitBeforeRetry(attempt);
                 continue;
             }
 
@@ -397,7 +429,7 @@ public class HNSPeerManager {
                     try { peer.socket.close(); } catch (Exception ignored) {}
             }
 
-            waitBeforeRetry(attempt, RETRY_DELAY_S);
+            waitBeforeRetry(attempt);
         }
     }
 
@@ -406,36 +438,50 @@ public class HNSPeerManager {
     // -------------------------------------------------------------------------
 
     /**
-     * Authenticates all seeds, picks the fastest, does the P2P handshake,
-     * and returns a ready HNSPeer. Returns null if no peers responded.
+     * Authenticates all seeds, picks the fastest peer at or above our tip,
+     * does the P2P handshake, and returns a ready HNSPeer.
+     * Returns null if no peers responded or all are below our local tip.
      * Used by syncHeaderPhase — block sync uses all peers via the coordinator.
      */
-    private static HNSPeer connectToBestPeer() throws Exception {
+    private static HNSPeer connectToBestPeer(int localTip) throws Exception {
         List<Peer> peers = discoverPeers();
         if (peers.isEmpty()) {
             System.out.println("No peers responded.");
             return null;
         }
-        Peer best = selectBestPeer(peers);
-        // Close unused sockets
-        for (Peer peer : peers)
-            if (peer != best)
-                try { peer.socket.close(); } catch (Exception ignored) {}
-        HNSPeer p = new HNSPeer(best, best.brontide);
-        p.handshake();
-        p.sendSendHeaders();
-        return p;
+        // Try peers in order of response time, skip any below our tip
+        for (Peer best : peers) {
+            @SuppressWarnings("DuplicatedCode") // same pattern in ChainFollower — kept separate
+            HNSPeer p;
+            try {
+                p = new HNSPeer(best, best.brontide);
+                p.handshake();
+                p.sendSendHeaders();
+                if (p.getPeerHeight() >= localTip) {
+                    // Close remaining unused sockets
+                    for (Peer peer : peers)
+                        if (peer != best)
+                            try { peer.socket.close(); } catch (Exception ignored) {}
+                    return p;
+                }
+                System.out.println("[Header sync] Skipping "
+                        + best.seed.ipAddress()
+                        + " (height=" + p.getPeerHeight()
+                        + " < our tip=" + localTip + ")");
+                best.socket.close();
+            } catch (Exception e) {
+                System.out.println("[Header sync] Peer "
+                        + best.seed.ipAddress() + " failed: " + e.getMessage());
+                try { best.socket.close(); } catch (Exception ignored) {}
+            }
+        }
+        System.out.println("[Header sync] No peers at or above our tip.");
+        return null;
     }
 
-    private static void waitBeforeRetry(int attempt, int baseDelay) throws Exception {
-        int delay = Math.min(baseDelay * attempt, 120);
+    private static void waitBeforeRetry(int attempt) throws Exception {
+        int delay = Math.min(5 * attempt, 120);
         System.out.println("Retrying in " + delay + "s...");
         Thread.sleep(delay * 1000L);
-    }
-
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
     }
 }

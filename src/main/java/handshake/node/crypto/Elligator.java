@@ -4,6 +4,32 @@ import java.math.BigInteger;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
+/**
+ * Elligator Squared encoding using the Shallue-van de Woestijne (SvdW) map
+ * for secp256k1. This is the exact algorithm used by bcrypto/hsd brontide.
+ *
+ * Source: bcrypto/lib/js/elliptic.js _svdwf(), _svdw(), _svdwi()
+ *
+ * secp256k1 parameters: a=0, b=7, z=1, c=sqrt(-3)
+ *   g(x) = x^3 + 7
+ *   g(z) = g(1) = 8
+ *
+ * Forward map _svdwf(u) -> (x, yy):
+ *   t1  = u^2 + gz
+ *   t2  = 1 / (u^2 * t1)     (or 0 if denom is 0)
+ *   t3  = u^4 * t2 * c
+ *   t4  = t1^3 * t2 * z3
+ *   x1  = (c - z)/2 - t3
+ *   x2  = t3 - (c + z)/2
+ *   x3  = z - t4
+ *   i   = ((jacobi(g(x1))-1) * jacobi(g(x2))) mod 3
+ *   return [x_i, g(x_i)]
+ *
+ * Inverse map _svdwi(p, hint) -> u  (hint selects which of 4 preimages)
+ *
+ * pointToHash  (encode): u1||u2 where svdw(u1)+svdw(u2) = point
+ * pointFromHash (decode): svdw(u1) + svdw(u2)
+ */
 public class Elligator {
 
     private static final BigInteger P         = Secp256k1.P;
@@ -57,6 +83,7 @@ public class Elligator {
 
             if (p1[1].signum() == 0) continue; // skip 2-torsion points
 
+            // p2 = point - p1 = point + (-p1)
             BigInteger[] negP1 = new BigInteger[]{ p1[0], P.subtract(p1[1]).mod(P) };
             BigInteger[] p2 = Secp256k1.pointAdd(point, negP1);
             if (p2 == null) continue; // point at infinity

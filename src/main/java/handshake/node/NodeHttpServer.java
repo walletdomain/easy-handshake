@@ -1,0 +1,398 @@
+package handshake.node;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+import handshake.database.Database;
+import handshake.node.api.ApiRouter;
+import handshake.node.api.JsonBuilder;
+import handshake.node.api.RpcRequest;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.Executors;
+
+/**
+ * Embedded HTTP server for the Easy Handshake node.
+ *
+ * Serves static web assets from src/main/resources/web/ (bundled in the JAR)
+ * and a JSON REST API for node status and block data.
+ *
+ * Built on com.sun.net.httpserver.HttpServer — JDK built-in, zero dependencies.
+ *
+ * Static assets (loaded from JAR resources):
+ *   /            → /web/index.html
+ *   /style.css   → /web/style.css
+ *   /app.js      → /web/app.js
+ *
+ * JSON API:
+ *   GET /api/status       — node status (height, sync, uptime, db size)
+ *   GET /api/block/{h}    — block info at height h
+ *
+ * Planned:
+ *   GET  /api/name/{tld}  — Handshake name record lookup (DNS resolver)
+ *   POST /dns-query       — DNS over HTTPS (DoH, RFC 8484)
+ *   GET  /config          — node configuration UI
+ *   GET  /wallet          — wallet UI
+ */
+public class NodeHttpServer {
+
+    public static final int DEFAULT_PORT = 8888;
+
+    /** MIME types for static files. */
+    private static final Map<String, String> MIME_TYPES = Map.of(
+            ".html", "text/html; charset=utf-8",
+            ".css",  "text/css; charset=utf-8",
+            ".js",   "application/javascript; charset=utf-8",
+            ".json", "application/json",
+            ".svg",  "image/svg+xml",
+            ".ico",  "image/x-icon"
+    );
+
+    private final Database   db;
+    private final int        port;
+    private final Instant    startTime;
+    private final String     version;
+    private final ApiRouter api;
+    private HttpServer       server;
+
+    public NodeHttpServer(Database db, int port, String version) {
+        this.db        = db;
+        this.port      = port;
+        this.version   = version;
+        this.startTime = Instant.now();
+        this.api       = new ApiRouter(db, version, startTime);
+    }
+
+    public NodeHttpServer(Database db) {
+        this(db, DEFAULT_PORT, "1.0.0");
+    }
+
+    // -------------------------------------------------------------------------
+    // Lifecycle
+    // -------------------------------------------------------------------------
+
+    public void start() throws IOException {
+        server = HttpServer.create(new InetSocketAddress(port), 0);
+
+        // JSON-RPC dispatcher (POST /)
+        server.createContext("/", exchange -> {
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                new RpcHandler().handle(exchange);
+            } else {
+                new StaticHandler().handle(exchange);
+            }
+        });
+
+        // REST API routes
+        server.createContext("/api/status",  new StatusHandler());
+        server.createContext("/api/block/",  new BlockHandler());
+        server.createContext("/block/",      new RestBlockHandler());
+        server.createContext("/header/",     new RestHeaderHandler());
+        server.createContext("/tx/",         new RestTxHandler());
+        server.createContext("/coin/",       new RestCoinHandler());
+
+        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.start();
+
+        System.out.println("[HTTP] Dashboard: http://localhost:" + port);
+        System.out.println("[HTTP] API:       http://localhost:" + port + "/api/status");
+        System.out.println("[HTTP] RPC:       http://localhost:" + port + " (POST)");
+    }
+
+    public void stop() {
+        if (server != null) {
+            server.stop(1);
+            System.out.println("[HTTP] Server stopped.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/status
+    // -------------------------------------------------------------------------
+
+    private class StatusHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+
+            int    headerTip  = db.getTipHeight();
+            int    blockTip   = db.getBlockDataTip();
+            long   dbBytes    = db.getStoreSize();
+            long   uptimeSecs = Duration.between(startTime, Instant.now()).getSeconds();
+            boolean synced    = blockTip >= headerTip - 2;
+
+            String json = String.format("""
+                    {
+                      "version": "%s",
+                      "height": %d,
+                      "blockTip": %d,
+                      "synced": %b,
+                      "uptimeSeconds": %d,
+                      "dbSizeBytes": %d,
+                      "dbSizeGB": %.2f
+                    }""",
+                    version, headerTip, blockTip, synced,
+                    uptimeSecs, dbBytes, dbBytes / 1_073_741_824.0);
+
+            sendText(exchange, 200, "application/json", json);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/block/{height}
+    // -------------------------------------------------------------------------
+
+    private class BlockHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+
+            String[] parts = exchange.getRequestURI().getPath().split("/");
+            if (parts.length < 4) {
+                sendText(exchange, 400, "application/json",
+                        "{\"error\": \"Usage: /api/block/{height}\"}");
+                return;
+            }
+
+            int height;
+            try {
+                height = Integer.parseInt(parts[3]);
+            } catch (NumberFormatException e) {
+                sendText(exchange, 400, "application/json",
+                        "{\"error\": \"Invalid height — must be an integer\"}");
+                return;
+            }
+
+            byte[] rawBlock = db.getRawBlock(height);
+            if (rawBlock == null) {
+                sendText(exchange, 404, "application/json",
+                        "{\"error\": \"Block not found at height " + height + "\"}");
+                return;
+            }
+
+            byte[] hash      = db.getHashAtHeight(height);
+            byte[] headerRaw = db.getHeaderAtHeight(height);
+
+            HNSPeer.BlockHeader header = headerRaw != null
+                    ? HNSPeer.BlockHeader.parse(headerRaw, 0) : null;
+            HNSBlock block = HNSBlock.parse(rawBlock);
+
+            String json = String.format("""
+                    {
+                      "height": %d,
+                      "hash": "%s",
+                      "time": %d,
+                      "bits": "%s",
+                      "txCount": %d,
+                      "sizeBytes": %d
+                    }""",
+                    height,
+                    hash != null ? toHex(hash) : "unknown",
+                    header != null ? header.time : 0,
+                    header != null ? "0x" + Integer.toHexString(header.bits) : "unknown",
+                    block.txs.size(),
+                    rawBlock.length);
+
+            sendText(exchange, 200, "application/json", json);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Static file handler — serves from JAR resources under /web/
+    // -------------------------------------------------------------------------
+
+    private static class StaticHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+
+            String path = exchange.getRequestURI().getPath();
+
+            // Map URL paths to resource paths
+            String resource = switch (path) {
+                case "/", "/index.html" -> "/web/index.html";
+                case "/style.css"       -> "/web/style.css";
+                case "/app.js"          -> "/web/app.js";
+                case "/favicon.ico"     -> "/web/favicon.ico";
+                case "/favicon.svg"     -> "/web/favicon.svg";
+                case "/hns-logo.svg"    -> "/web/hns-logo.svg";
+                default                 -> null;
+            };
+
+            if (resource == null) {
+                sendText(exchange, 404, "text/plain", "404 Not Found: " + path);
+                return;
+            }
+
+            byte[] bytes = loadResource(resource);
+            if (bytes == null) {
+                sendText(exchange, 500, "text/plain",
+                        "Resource not found in JAR: " + resource);
+                return;
+            }
+
+            String ext  = resource.substring(resource.lastIndexOf('.'));
+            String mime = MIME_TYPES.getOrDefault(ext, "application/octet-stream");
+            sendBytes(exchange, 200, mime, bytes);
+        }
+
+        private byte[] loadResource(String path) {
+            try (InputStream is = NodeHttpServer.class.getResourceAsStream(path)) {
+                return is != null ? is.readAllBytes() : null;
+            } catch (IOException e) {
+                return null;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // HTTP helpers
+    // -------------------------------------------------------------------------
+
+    private static boolean isNotGet(HttpExchange exchange) {
+        return !"GET".equalsIgnoreCase(exchange.getRequestMethod());
+    }
+
+    private static void methodNotAllowed(HttpExchange exchange) throws IOException {
+        sendText(exchange, 405, "text/plain", "Method Not Allowed");
+    }
+
+    private static void sendText(HttpExchange exchange, int code,
+                                 String contentType, String body)
+            throws IOException {
+        sendBytes(exchange, code, contentType,
+                body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void sendBytes(HttpExchange exchange, int code,
+                                  String contentType, byte[] body)
+            throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.sendResponseHeaders(code, body.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // POST / — JSON-RPC dispatcher
+    // -------------------------------------------------------------------------
+
+    private class RpcHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                String body = new String(
+                        exchange.getRequestBody().readAllBytes(),
+                        StandardCharsets.UTF_8);
+                RpcRequest req = RpcRequest.parse(body);
+                String response = api.rpc(req.method, req.params, req.id);
+                sendText(exchange, 200, "application/json", response);
+            } catch (Exception e) {
+                String err = "{\"id\":null,\"result\":null,\"error\":"
+                        + "{\"message\":" + JsonBuilder.q(e.getMessage())
+                        + ",\"code\":-32700}}";
+                sendText(exchange, 400, "application/json", err);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /block/:hashOrHeight
+    // -------------------------------------------------------------------------
+
+    private class RestBlockHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+            String[] parts = exchange.getRequestURI().getPath().split("/");
+            if (parts.length < 3) {
+                sendText(exchange, 400, "application/json",
+                        JsonBuilder.error("Usage: /block/:hashOrHeight", -8));
+                return;
+            }
+            String query = exchange.getRequestURI().getQuery();
+            boolean details = query == null || !query.contains("verbose=0");
+            sendText(exchange, 200, "application/json",
+                    api.getBlock(parts[2], details));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /header/:hashOrHeight
+    // -------------------------------------------------------------------------
+
+    private class RestHeaderHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+            String[] parts = exchange.getRequestURI().getPath().split("/");
+            if (parts.length < 3) {
+                sendText(exchange, 400, "application/json",
+                        JsonBuilder.error("Usage: /header/:hashOrHeight", -8));
+                return;
+            }
+            sendText(exchange, 200, "application/json",
+                    api.getHeader(parts[2]));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /tx/:txhash
+    // -------------------------------------------------------------------------
+
+    private class RestTxHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+            String[] parts = exchange.getRequestURI().getPath().split("/");
+            if (parts.length < 3) {
+                sendText(exchange, 400, "application/json",
+                        JsonBuilder.error("Usage: /tx/:txhash", -8));
+                return;
+            }
+            sendText(exchange, 200, "application/json",
+                    api.getTx(parts[2]));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /coin/:txhash/:index
+    // -------------------------------------------------------------------------
+
+    private class RestCoinHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+            String[] parts = exchange.getRequestURI().getPath().split("/");
+            if (parts.length < 4) {
+                sendText(exchange, 400, "application/json",
+                        JsonBuilder.error("Usage: /coin/:txhash/:index", -8));
+                return;
+            }
+            try {
+                int index = Integer.parseInt(parts[3]);
+                sendText(exchange, 200, "application/json",
+                        api.getCoin(parts[2], index));
+            } catch (NumberFormatException e) {
+                sendText(exchange, 400, "application/json",
+                        JsonBuilder.error("Invalid index", -8));
+            }
+        }
+    }
+
+    private static String toHex(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+}

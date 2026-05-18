@@ -24,10 +24,9 @@ public class NodeIdentity {
 
     private final byte[] privateKey;
     private final byte[] publicKey;
-    private final File   keyFile;
 
     public NodeIdentity(String dataDir) throws Exception {
-        this.keyFile = new File(dataDir, "node.key");
+        File keyFile = new File(dataDir, "node.key");
 
         if (keyFile.exists()) {
             // Load existing key
@@ -45,7 +44,9 @@ public class NodeIdentity {
             this.privateKey = priv;
 
             // Save to file
-            keyFile.getParentFile().mkdirs();
+            File parent = keyFile.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs())
+                System.err.println("[Identity] Warning: could not create directory: " + parent);
             Files.write(keyFile.toPath(), bytesToHex(priv).getBytes());
             System.out.println("[Identity] Generated new node key, saved to "
                     + keyFile.getPath());
@@ -60,6 +61,8 @@ public class NodeIdentity {
     }
 
     public byte[] privateKey() { return privateKey; }
+
+    @SuppressWarnings("unused") // used by PeerServer and future wallet (planned)
     public byte[] publicKey()  { return publicKey; }
 
     // -------------------------------------------------------------------------
@@ -89,6 +92,7 @@ public class NodeIdentity {
         return data;
     }
 
+    @SuppressWarnings("DuplicatedCode") // same algorithm in HNSPeer — kept separate for independence
     private static String base32Encode(byte[] data) {
         final String ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
         StringBuilder sb = new StringBuilder();

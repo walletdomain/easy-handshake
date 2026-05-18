@@ -97,10 +97,11 @@ public class HNSBlock {
         public final List<Witness> witnesses; // one per input, after outputs
         public final byte[]       raw;        // full tx bytes for hashing
         public final int          rawSize;    // bytes consumed from wire
+        public final int          baseSize;   // bytes up to (not including) witnesses
 
         private Tx(int version, List<Input> inputs, List<Output> outputs,
                    long locktime, List<Witness> witnesses,
-                   byte[] raw, int rawSize) {
+                   byte[] raw, int rawSize, int baseSize) {
             this.version   = version;
             this.inputs    = inputs;
             this.outputs   = outputs;
@@ -108,9 +109,10 @@ public class HNSBlock {
             this.witnesses = witnesses;
             this.raw       = raw;
             this.rawSize   = rawSize;
+            this.baseSize  = baseSize;
         }
 
-        static Tx parse(byte[] data, int start) {
+        public static Tx parse(byte[] data, int start) {
             int pos = start;
             ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
@@ -139,6 +141,9 @@ public class HNSBlock {
             // locktime (4 bytes LE)
             long locktime = buf.getInt(pos) & 0xFFFFFFFFL; pos += 4;
 
+            // Record position BEFORE witnesses — this is the base tx end
+            int baseEnd = pos - start;
+
             // witnesses — one per input, after all outputs
             List<Witness> witnesses = new ArrayList<>(inCount);
             for (int i = 0; i < inCount; i++) {
@@ -149,7 +154,8 @@ public class HNSBlock {
 
             int rawSize = pos - start;
             byte[] raw  = Arrays.copyOfRange(data, start, pos);
-            return new Tx(version, inputs, outputs, locktime, witnesses, raw, rawSize);
+            return new Tx(version, inputs, outputs, locktime, witnesses,
+                    raw, rawSize, baseEnd);
         }
 
         @Override
@@ -261,19 +267,31 @@ public class HNSBlock {
         public final List<byte[]> items;
         public final int         size;   // bytes consumed
 
-        // Covenant types (from covenant.js)
-        public static final int NONE    = 0;
-        public static final int CLAIM   = 1;
-        public static final int OPEN    = 2;
-        public static final int BID     = 3;
-        public static final int REVEAL  = 4;
-        public static final int REDEEM  = 5;
+        // Covenant types (from covenant.js) — used by DNS resolver and wallet (planned)
+        @SuppressWarnings("unused")
+        public static final int NONE     = 0;
+        @SuppressWarnings("unused")
+        public static final int CLAIM    = 1;
+        @SuppressWarnings("unused")
+        public static final int OPEN     = 2;
+        @SuppressWarnings("unused")
+        public static final int BID      = 3;
+        @SuppressWarnings("unused")
+        public static final int REVEAL   = 4;
+        @SuppressWarnings("unused")
+        public static final int REDEEM   = 5;
+        @SuppressWarnings("unused")
         public static final int REGISTER = 6;
-        public static final int UPDATE  = 7;
-        public static final int RENEW   = 8;
+        @SuppressWarnings("unused")
+        public static final int UPDATE   = 7;
+        @SuppressWarnings("unused")
+        public static final int RENEW    = 8;
+        @SuppressWarnings("unused")
         public static final int TRANSFER = 9;
+        @SuppressWarnings("unused")
         public static final int FINALIZE = 10;
-        public static final int REVOKE  = 11;
+        @SuppressWarnings("unused")
+        public static final int REVOKE   = 11;
 
         private Covenant(int type, List<byte[]> items, int size) {
             this.type  = type;
@@ -281,6 +299,7 @@ public class HNSBlock {
             this.size  = size;
         }
 
+        @SuppressWarnings("DuplicatedCode") // similar to Witness.parse by design — both decode VarBytes lists
         static Covenant parse(byte[] data, int start) {
             int pos = start;
 
@@ -317,6 +336,7 @@ public class HNSBlock {
             this.size  = size;
         }
 
+        @SuppressWarnings("DuplicatedCode") // similar to Covenant.parse by design — both decode VarBytes lists
         static Witness parse(byte[] data, int start) {
             int pos = start;
 

@@ -14,7 +14,8 @@ public class Peer {
     public final Socket        socket;
     public final BrontideState brontide;
 
-    public Peer(Seed seed, long responseTimeMs, Socket socket, BrontideState brontide) {
+    public Peer(Seed seed, long responseTimeMs,
+                Socket socket, BrontideState brontide) {
         this.seed           = seed;
         this.responseTimeMs = responseTimeMs;
         this.socket         = socket;

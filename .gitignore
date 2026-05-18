@@ -1,36 +1,48 @@
-# Maven build output
 target/
-*.jar
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
 
-# IntelliJ IDEA
+### IntelliJ IDEA ###
 .idea/
-*.iml
 *.iws
+*.iml
 *.ipr
 out/
 
-# Eclipse
+### Eclipse ###
+.apt_generated
 .classpath
+.factorypath
 .project
-.settings/
+.settings
+.springBeans
+.sts4-cache
 
-# VS Code
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
 .vscode/
 
-# macOS
+### Mac OS ###
 .DS_Store
 
 # Windows
 Thumbs.db
 
 # Node data directory (contains private key and database — never commit these)
-easy_handshake/
 *.mv.db
 *.mv.db.trace.db
 node.key
-
-# Exception: static resource databases bundled in the JAR
-!src/main/resources/*.mv.db
 
 # Logs
 *.log

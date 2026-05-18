@@ -1,4 +1,4 @@
-package handshake.node;
+import handshake.node.HNSPeer;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

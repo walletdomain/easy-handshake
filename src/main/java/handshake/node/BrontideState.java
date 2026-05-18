@@ -50,8 +50,7 @@ public class BrontideState {
     // Transport framing sizes — BrontideStream.write() format:
     // encLen(4 LE) + lenTag(16) + encBody(N) + bodyTag(16)
     // Header (send/recv): 4 + 16 = 20 bytes
-    public static final int SEND_HEADER_SIZE = 20;
-    public static final int HEADER_SIZE      = 20;
+    public static final int HEADER_SIZE = 20;
 
     private static final SecureRandom RNG = new SecureRandom();
 
@@ -537,6 +536,7 @@ public class BrontideState {
     // -------------------------------------------------------------------------
 
     // Handshake IV: nonce as little-endian uint32 at bytes 4-7 (matches hsd)
+    @SuppressWarnings("DuplicatedCode") // structurally similar to updateNonceIv but distinct
     private void updateIv() {
         Arrays.fill(iv, (byte) 0);
         iv[4] = (byte)  (nonce        & 0xFF);
@@ -547,17 +547,12 @@ public class BrontideState {
 
     // Transport IV: nonce as little-endian uint32 at bytes 4-7
     // Matches CipherState.update(): this.iv.writeUInt32LE(this.nonce, 4)
+    @SuppressWarnings("DuplicatedCode") // structurally similar to updateIv but distinct
     private void updateNonceIv(byte[] ivBuf, long n) {
         Arrays.fill(ivBuf, (byte) 0);
         ivBuf[4] = (byte)  (n        & 0xFF);
         ivBuf[5] = (byte) ((n >>  8) & 0xFF);
         ivBuf[6] = (byte) ((n >> 16) & 0xFF);
         ivBuf[7] = (byte) ((n >> 24) & 0xFF);
-    }
-
-    private static String bytesToHex(byte[] b) {
-        StringBuilder sb = new StringBuilder();
-        for (byte x : b) sb.append(String.format("%02x", x));
-        return sb.toString();
     }
 }

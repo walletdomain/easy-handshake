@@ -76,12 +76,6 @@ public class BlockSyncCoordinator {
     /** All authenticated peers. */
     private final List<Peer> peers;
 
-    /** Maximum additional peers to discover via GETADDR. */
-    private static final int MAX_EXTRA_PEERS = 32;
-
-    /** How long to wait for each ADDR response in ms. */
-    private static final int GETADDR_TIMEOUT_MS = 5000;
-
     // -------------------------------------------------------------------------
     // Constructor
     // -------------------------------------------------------------------------
@@ -157,32 +151,29 @@ public class BlockSyncCoordinator {
         discoverMorePeers();
 
         // Start one PeerWorker thread per peer
-        ExecutorService workerPool = Executors.newFixedThreadPool(peers.size());
-        List<PeerWorker> workers = new ArrayList<>();
+        try (ExecutorService workerPool = Executors.newFixedThreadPool(peers.size())) {
+            for (Peer peer : peers)
+                workerPool.submit(new PeerWorker(peer));
 
-        for (Peer peer : peers) {
-            PeerWorker worker = new PeerWorker(peer);
-            workers.add(worker);
-            workerPool.submit(worker);
+            // Start the single database writer thread
+            Thread writerThread = new Thread(this::runDatabaseWriter, "db-writer");
+            writerThread.setDaemon(true);
+            writerThread.start();
+
+            // Progress reporter — prints every 30 seconds
+            Thread progressThread = new Thread(this::runProgressReporter, "progress");
+            progressThread.setDaemon(true);
+            progressThread.start();
+
+            // Wait for all workers to finish
+            workerPool.shutdown();
+            if (!workerPool.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS))
+                System.out.println("[BlockSync] Worker pool did not terminate cleanly.");
+
+            // Signal the writer that no more blocks are coming
+            writeQueue.put(WriteTask.POISON);
+            writerThread.join();
         }
-
-        // Start the single database writer thread
-        Thread writerThread = new Thread(this::runDatabaseWriter, "db-writer");
-        writerThread.setDaemon(true);
-        writerThread.start();
-
-        // Progress reporter — prints every 30 seconds
-        Thread progressThread = new Thread(this::runProgressReporter, "progress");
-        progressThread.setDaemon(true);
-        progressThread.start();
-
-        // Wait for all workers to finish
-        workerPool.shutdown();
-        workerPool.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
-
-        // Signal the writer that no more blocks are coming
-        writeQueue.put(WriteTask.POISON);
-        writerThread.join();
 
         if (fatalError.get())
             throw new Exception("[BlockSync] Fatal database error during sync.");
@@ -210,17 +201,19 @@ public class BlockSyncCoordinator {
         @Override
         public void run() {
             String ip = peer.seed.ipAddress();
-            System.out.println("[" + ip + "] Worker starting...");
+            // suppressed: worker starting
 
-            HNSPeer hnsPeer = null;
+            HNSPeer hnsPeer = null; // null check needed in finally block
             try {
-                // P2P handshake
+                // P2P handshake — guard against null brontide state
+                if (peer.brontide == null) {
+                    System.out.println("[" + ip + "] No brontide state — skipping.");
+                    return;
+                }
                 hnsPeer = new HNSPeer(peer, peer.brontide);
                 hnsPeer.handshake();
                 hnsPeer.sendSendHeaders();
                 hnsPeer.drainPendingMessages();
-                System.out.println("[" + ip + "] Ready. agent="
-                        + hnsPeer.getPeerAgent());
 
                 // Pull chunks from the work queue and download them
                 while (!fatalError.get()) {
@@ -230,12 +223,22 @@ public class BlockSyncCoordinator {
                     try {
                         downloadChunk(hnsPeer, chunk);
                     } catch (Exception e) {
+                        String msg = e.getMessage() != null ? e.getMessage() : "";
+                        boolean isExpectedDrop = msg.contains("Connection closed")
+                                || msg.contains("timed out")
+                                || msg.contains("reset")
+                                || msg.contains("Broken pipe");
                         System.out.println("[" + ip + "] Error during chunk: "
                                 + e.getClass().getSimpleName()
-                                + ": " + e.getMessage());
-                        if (!(e instanceof SecurityException))
-                            e.printStackTrace();
-                        returnToQueue(chunk, hnsPeer);
+                                + ": " + msg);
+                        if (!isExpectedDrop && !(e instanceof SecurityException))
+                            System.out.println("[" + ip + "] Unexpected error: "
+                                    + e.getClass().getName() + "\n"
+                                    + java.util.Arrays.stream(e.getStackTrace())
+                                    .limit(5)
+                                    .map(StackTraceElement::toString)
+                                    .collect(java.util.stream.Collectors.joining("\n\t", "\t", "")));
+                        returnToQueue(chunk);
                         break;
                     }
                     hnsPeer.drainPendingMessages();
@@ -248,7 +251,7 @@ public class BlockSyncCoordinator {
             } finally {
                 if (hnsPeer != null)
                     try { hnsPeer.peer.socket.close(); } catch (Exception ignored) {}
-                System.out.println("[" + ip + "] Worker finished.");
+                // suppressed: worker finished
             }
         }
 
@@ -272,7 +275,8 @@ public class BlockSyncCoordinator {
          * Blocks are collected entirely in memory first, then handed
          * to the DB write queue — keeping the network loop non-blocking.
          */
-        private void downloadChunk(HNSPeer p, List<HeightHash> chunk) throws Exception {
+        private void downloadChunk(HNSPeer p,
+                                   List<HeightHash> chunk) throws Exception {
             // Skip heights already completed by another peer
             List<HeightHash> needed = new ArrayList<>(chunk.size());
             for (HeightHash hh : chunk)
@@ -287,7 +291,7 @@ public class BlockSyncCoordinator {
             List<byte[]> hashes = new ArrayList<>(needed.size());
             for (HeightHash hh : needed) hashes.add(hh.hash);
 
-            p.syncBlocks(hashes, needed.get(0).height, (height, block) -> {
+            p.syncBlocks(hashes, needed.getFirst().height, (height, block) -> {
                 byte[] raw = buildRawBlock(block);
                 downloaded.add(new WriteTask(height, block, raw));
             });
@@ -303,7 +307,7 @@ public class BlockSyncCoordinator {
          * Returns any un-downloaded items from a failed chunk back to the
          * work queue so another worker can pick them up.
          */
-        private void returnToQueue(List<HeightHash> chunk, HNSPeer p) {
+        private void returnToQueue(List<HeightHash> chunk) {
             int returned = 0;
             for (HeightHash hh : chunk) {
                 if (!completed.containsKey(hh.height)) {
@@ -366,14 +370,16 @@ public class BlockSyncCoordinator {
     private void runProgressReporter() {
         try {
             while (!Thread.currentThread().isInterrupted()) {
-                Thread.sleep(30_000);
+                TimeUnit.SECONDS.sleep(30);
                 int written  = writtenCount.get();
                 int queued   = workQueue.size();
                 int inFlight = totalBlocks - written - queued;
-                System.out.printf("[Progress] Written: %d  In-flight: %d  "
-                                + "Queued: %d  Total: %d  (%.1f%%)%n",
-                        written, inFlight, queued, totalBlocks,
-                        100.0 * written / totalBlocks);
+                // Only show progress for larger syncs — not for 1-2 block updates
+                if (totalBlocks > 10)
+                    System.out.printf("[Progress] Written: %d  In-flight: %d  "
+                                    + "Queued: %d  Total: %d  (%.1f%%)%n",
+                            written, inFlight, queued, totalBlocks,
+                            100.0 * written / totalBlocks);
             }
         } catch (InterruptedException ignored) {}
     }

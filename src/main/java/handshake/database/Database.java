@@ -33,12 +33,14 @@ import java.util.List;
 public class Database implements AutoCloseable {
 
     // Map names
-    private static final String MAP_HEADERS   = "headers";
-    private static final String MAP_HASHES    = "hashes";
-    private static final String MAP_CHAINWORK = "chainwork";
-    private static final String MAP_BLOCKS    = "blocks";
-    private static final String MAP_UTXO      = "utxo";
-    private static final String MAP_META      = "meta";
+    private static final String MAP_HEADERS    = "headers";
+    private static final String MAP_HASHES     = "hashes";
+    private static final String MAP_CHAINWORK  = "chainwork";
+    private static final String MAP_BLOCKS     = "blocks";
+    private static final String MAP_UTXO       = "utxo";
+    private static final String MAP_META       = "meta";
+    private static final String MAP_NAME_INDEX = "nameIndex";   // name → resource bytes
+    private static final String MAP_NAME_HASHES= "nameHashes";  // hashHex → name
 
     // Meta keys
     private static final String META_BLOCK_TIP  = "block_tip";
@@ -58,6 +60,8 @@ public class Database implements AutoCloseable {
     private final MVMap<Long, byte[]> blocks;
     private final MVMap<String, byte[]> utxo;
     private final MVMap<String, byte[]> meta;
+    private final MVMap<String, byte[]> nameIndex;   // name → resource bytes
+    private final MVMap<String, String> nameHashes;  // hashHex → name
 
     // Whether to store full raw block bytes (disable for minimal footprint)
     private final boolean storeBlocks;
@@ -83,7 +87,8 @@ public class Database implements AutoCloseable {
     public Database(String path, boolean storeBlocks) {
         this.storeBlocks = storeBlocks;
         File dir = new File(path).getParentFile();
-        if (dir != null && !dir.exists()) dir.mkdirs();
+        if (dir != null && !dir.exists() && !dir.mkdirs())
+            System.err.println("[Database] Warning: could not create directory: " + dir);
 
         this.store = new MVStore.Builder()
                 .fileName(path)
@@ -93,15 +98,17 @@ public class Database implements AutoCloseable {
         // Auto-commit every 1 second in the background
         this.store.setAutoCommitDelay(1000);
 
-        this.headers   = store.openMap(MAP_HEADERS);
-        this.hashes    = store.openMap(MAP_HASHES);
-        this.chainwork = store.openMap(MAP_CHAINWORK);
-        this.blocks    = store.openMap(MAP_BLOCKS);
-        this.utxo      = store.openMap(MAP_UTXO);
-        this.meta      = store.openMap(MAP_META);
+        this.headers    = store.openMap(MAP_HEADERS);
+        this.hashes     = store.openMap(MAP_HASHES);
+        this.chainwork  = store.openMap(MAP_CHAINWORK);
+        this.blocks     = store.openMap(MAP_BLOCKS);
+        this.utxo       = store.openMap(MAP_UTXO);
+        this.meta       = store.openMap(MAP_META);
+        this.nameIndex  = store.openMap(MAP_NAME_INDEX);
+        this.nameHashes = store.openMap(MAP_NAME_HASHES);
 
         if (!meta.containsKey(META_SCHEMA_VER)) {
-            meta.put(META_SCHEMA_VER, intToBytes(SCHEMA_VERSION));
+            meta.put(META_SCHEMA_VER, longToBytes(SCHEMA_VERSION));
             store.commit();
         }
     }
@@ -148,7 +155,7 @@ public class Database implements AutoCloseable {
             tipHeight = (int) height;
         }
 
-        Long currentTip = bytesToLong(meta.get(META_HEADER_TIP));
+        long currentTip = bytesToLong(meta.get(META_HEADER_TIP));
         if (tipHeight > currentTip)
             meta.put(META_HEADER_TIP, longToBytes(tipHeight));
 
@@ -229,11 +236,13 @@ public class Database implements AutoCloseable {
     }
 
     /** Returns coin bytes for an unspent output, or null if spent. */
+    @SuppressWarnings("unused") // used by wallet and DNS resolver (planned)
     public byte[] getUtxo(byte[] txHash, int outputIndex) {
         return utxo.get(outpointKey(txHash, outputIndex));
     }
 
     /** Returns the total number of UTXOs in the set. */
+    @SuppressWarnings("unused") // used by node status reporting (planned)
     public long getUtxoCount() {
         return utxo.sizeAsLong();
     }
@@ -242,6 +251,9 @@ public class Database implements AutoCloseable {
     // Median time
     // -------------------------------------------------------------------------
 
+    /** Returns the median timestamp of up to 11 blocks ending at height.
+     *  Used for transaction locktime validation. */
+    @SuppressWarnings("unused") // used by transaction validation (planned)
     public long getMedianTime(int height) {
         List<Long> times = new ArrayList<>();
         for (int h = Math.max(0, height - 10); h <= height; h++) {
@@ -259,13 +271,14 @@ public class Database implements AutoCloseable {
 
     private void advanceBlockTip(int height) {
         int currentTip = getBlockDataTip();
+        int headerTip  = getTipHeight();
         if (height <= currentTip) return;
+        if (height > headerTip) return; // never advance beyond known headers
         if (height == currentTip + 1) {
             int newTip = height;
-            // When storing blocks, scan forward through existing entries
-            // When not storing blocks, just advance by 1 (gap detection via tip only)
             if (storeBlocks)
-                while (blocks.containsKey((long)(newTip + 1))) newTip++;
+                while (newTip < headerTip && blocks.containsKey((long)(newTip + 1)))
+                    newTip++;
             meta.put(META_BLOCK_TIP, longToBytes(newTip));
         }
     }
@@ -273,6 +286,89 @@ public class Database implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Store info
     // -------------------------------------------------------------------------
+
+    /**
+     * Removes any raw block entries stored above the given height.
+     * Called once at startup when orphaned blocks are detected above the
+     * header tip — cleans up stale data from previous sync sessions.
+     */
+    public void removeBlocksAbove(int maxHeight) {
+        int removed = 0;
+        // Scan upward from maxHeight+1 until no more blocks found
+        for (int h = maxHeight + 1; h <= maxHeight + 50_000; h++) {
+            if (blocks.remove((long) h) != null)
+                removed++;
+            else if (h > maxHeight + 1000)
+                break; // no blocks found in last 1000 heights — stop scanning
+        }
+        if (removed > 0) {
+            store.commit();
+            System.out.println("[Database] Removed " + removed
+                    + " orphaned blocks above height " + maxHeight);
+        }
+    }
+
+    /**
+     * Recomputes the contiguous block tip efficiently.
+     * Since we know the stale tip is too high, scans downward from headerTip
+     * to find the first block that actually exists, then scans upward from
+     * the last known good region to find the true contiguous boundary.
+     * Much faster than scanning all 330,000 blocks from height 0.
+     */
+    public void recomputeBlockTip() {
+        int headerTip = getTipHeight();
+        if (headerTip < 0) {
+            meta.put(META_BLOCK_TIP, longToBytes(-1));
+            store.commit();
+            return;
+        }
+
+        // Step 1: scan downward from headerTip in large steps to find
+        // a region where blocks exist
+        int step = 1000;
+        int knownGood = -1;
+        for (int h = headerTip; h >= 0; h -= step) {
+            if (blocks.containsKey((long) h)) {
+                knownGood = h;
+                break;
+            }
+        }
+
+        if (knownGood < 0) {
+            // No blocks found at all
+            meta.put(META_BLOCK_TIP, longToBytes(-1));
+            store.commit();
+            System.out.println("[Database] Recomputed block tip: -1 (no blocks)");
+            return;
+        }
+
+        // Step 2: scan forward from knownGood to find first gap
+        int contig = knownGood;
+        for (int h = knownGood + 1; h <= headerTip; h++) {
+            if (blocks.containsKey((long) h))
+                contig = h;
+            else
+                break;
+        }
+
+        // Step 3: verify backward — make sure there's no gap below knownGood
+        // by scanning backward from knownGood in smaller steps
+        for (int h = knownGood - 1; h >= Math.max(0, knownGood - step); h--) {
+            if (!blocks.containsKey((long) h)) {
+                // Gap found below — real contiguous tip is lower, scan up from 0
+                contig = -1;
+                for (int fh = 0; fh <= h; fh++) {
+                    if (blocks.containsKey((long) fh)) contig = fh;
+                    else break;
+                }
+                break;
+            }
+        }
+
+        meta.put(META_BLOCK_TIP, longToBytes(contig));
+        store.commit();
+        System.out.println("[Database] Recomputed block tip: " + contig);
+    }
 
     /**
      * Compacts the MVStore file by rewriting chunks with low fill rate.
@@ -286,10 +382,14 @@ public class Database implements AutoCloseable {
         store.compact(50, 4 * 1024 * 1024);
     }
 
+    /** Returns the on-disk file size in bytes. */
+    @SuppressWarnings("unused") // used by node status reporting (planned)
     public long getStoreSize() {
         return store.getFileStore() != null ? store.getFileStore().size() : 0;
     }
 
+    /** Forces a commit to disk. */
+    @SuppressWarnings("unused") // used by external callers (planned)
     public void commit() { store.commit(); }
 
     // -------------------------------------------------------------------------
@@ -314,10 +414,6 @@ public class Database implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Encoding helpers — values
     // -------------------------------------------------------------------------
-
-    private static byte[] intToBytes(int v) {
-        return new byte[]{(byte)(v>>>24),(byte)(v>>>16),(byte)(v>>>8),(byte)v};
-    }
 
     private static byte[] longToBytes(long v) {
         byte[] b = new byte[8];
@@ -357,7 +453,7 @@ public class Database implements AutoCloseable {
 
     /** Returns true if all bytes in hash are zero (coinbase prevout). */
     private static boolean isZeroHash(byte[] hash) {
-        if (hash == null || hash.length == 0) return true;
+        if (hash == null) return true;
         for (byte b : hash) if (b != 0) return false;
         return true;
     }
@@ -405,17 +501,38 @@ public class Database implements AutoCloseable {
         return BigInteger.ONE.shiftLeft(256).divide(target.add(BigInteger.ONE));
     }
 
+    /** Encodes a BigInteger as a 32-byte big-endian array. Delegates to Secp256k1. */
     private static byte[] toBytes32(BigInteger v) {
-        byte[] raw = v.toByteArray();
-        byte[] out = new byte[32];
-        if (raw.length >= 32) System.arraycopy(raw, raw.length-32, out, 0, 32);
-        else                  System.arraycopy(raw, 0, out, 32-raw.length, raw.length);
-        return out;
+        return handshake.node.crypto.Secp256k1.to32Bytes(v);
     }
 
     // -------------------------------------------------------------------------
     // AutoCloseable
     // -------------------------------------------------------------------------
+
+    /** Gets a raw byte[] value from the meta map. Returns null if not found. */
+    public byte[] getMeta(String key) {
+        return meta.get(key);
+    }
+
+    /** Puts a raw byte[] value into the meta map. */
+    public void putMeta(String key, byte[] value) {
+        meta.put(key, value);
+    }
+
+    // ── Name index accessors ──────────────────────────────────────────────────
+
+    /** Returns the persistent name→resource map. */
+    public MVMap<String, byte[]> getNameIndex()  { return nameIndex; }
+
+    /** Returns the persistent nameHash→name reverse map. */
+    public MVMap<String, String> getNameHashes() { return nameHashes; }
+
+    /** Returns true if the name index has been built (non-empty). */
+    public boolean isNameIndexBuilt() { return !nameIndex.isEmpty(); }
+
+    /** Commits pending name index writes to disk. */
+    public void commitNameIndex() { store.commit(); }
 
     @Override
     public void close() {

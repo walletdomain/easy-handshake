@@ -33,7 +33,7 @@ public class PeerServer {
     private static final int MAX_INBOUND_PEERS = 8;
     private static final int LISTEN_PORT       = 44806;
 
-    private final NodeIdentity identity;
+    private final NodeIdentity      identity;
     private final Database          db;
     private final int               port;
     private final AtomicBoolean     running = new AtomicBoolean(false);
@@ -94,7 +94,7 @@ public class PeerServer {
     // -------------------------------------------------------------------------
 
     private void handleInbound(Socket socket, String remoteIp) {
-        try {
+        try (socket) {
             socket.setSoTimeout(30_000);
             InputStream  in  = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
@@ -129,7 +129,7 @@ public class PeerServer {
 
             byte[] remotePub = brontide.getRemoteStaticPub();
             System.out.println("[PeerServer] " + remoteIp
-                    + " brontide OK. RemotePub: " + bytesToHex(remotePub, 8) + "...");
+                    + " brontide OK. RemotePub: " + bytesToHex8(remotePub) + "...");
 
             // ---- P2P handshake ----
 
@@ -146,8 +146,6 @@ public class PeerServer {
         } catch (Exception e) {
             System.out.println("[PeerServer] " + remoteIp
                     + " disconnected: " + e.getMessage());
-        } finally {
-            try { socket.close(); } catch (Exception ignored) {}
         }
     }
 
@@ -158,6 +156,7 @@ public class PeerServer {
     private void serveRequests(HNSPeer peer, String remoteIp) throws Exception {
         System.out.println("[PeerServer] Serving " + remoteIp);
 
+        //noinspection InfiniteLoopStatement — loop exits when peer disconnects (throws)
         while (true) {
             HNSMessage.Message msg = peer.readMessage();
 
@@ -308,10 +307,10 @@ public class PeerServer {
         return new byte[]{0}; // varint(0) — empty address list
     }
 
-    private static String bytesToHex(byte[] b, int maxBytes) {
-        int len = Math.min(b.length, maxBytes);
-        StringBuilder sb = new StringBuilder(len * 2);
-        for (int i = 0; i < len; i++) sb.append(String.format("%02x", b[i]));
+    private static String bytesToHex8(byte[] b) {
+        StringBuilder sb = new StringBuilder(16);
+        for (int i = 0; i < Math.min(b.length, 8); i++)
+            sb.append(String.format("%02x", b[i]));
         return sb.toString();
     }
 }
