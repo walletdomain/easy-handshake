@@ -518,6 +518,18 @@ public class DnsMessage {
         return readName(rdata, pos, rdata.length);
     }
 
+    /** Returns the RCODE from a raw DNS response byte array. */
+    public static int rcode(byte[] response) {
+        if (response == null || response.length < 4) return 2; // SERVFAIL
+        return response[3] & 0x0F;
+    }
+
+    /** Returns the answer count from a raw DNS response byte array. */
+    public static int answerCount(byte[] response) {
+        if (response == null || response.length < 8) return 0;
+        return ((response[6] & 0xFF) << 8) | (response[7] & 0xFF);
+    }
+
     /** Returns the string name for a DNS record type. */
     public static String typeName(int type) {
         return switch (type) {

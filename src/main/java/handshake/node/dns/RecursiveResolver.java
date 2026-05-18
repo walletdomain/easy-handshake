@@ -1,5 +1,6 @@
 package handshake.node.dns;
 
+import handshake.node.EventBus;
 import java.net.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -127,7 +128,9 @@ public class RecursiveResolver {
      * @return         the DNS response bytes to send back to the client
      */
     private byte[] resolve(DnsMessage.Message query, byte[] rawQuery) {
-        String tld = query.queryTld();
+        String tld   = query.queryTld();
+        String qname = query.queryName();
+        String qtype = DnsMessage.typeName(query.queryType());
 
         if (tld == null || tld.isEmpty())
             return DnsMessage.buildServfail(query);
@@ -136,28 +139,31 @@ public class RecursiveResolver {
 
         // ── HNS-first: check Handshake name index ─────────────────────────────
         if (nameIndex.contains(tld)) {
-            // Found in name index — resolve via our authoritative server
-            return forwardToAuthoritativeServer(rawQuery, query);
+            byte[] response = forwardToAuthoritativeServer(rawQuery, query);
+            int rcode = DnsMessage.rcode(response);
+            EventBus.get().dns("HNS " + qtype + " " + qname
+                    + (rcode == 0 ? " → resolved" : " → NXDOMAIN"));
+            return response;
         }
 
         // ── Check if this is a known ICANN/reserved TLD ───────────────────────
         if (reserved.isReserved(tld)) {
-            // Known ICANN or reserved TLD — forward to ICANN DNS
-            return forwardToIcann(rawQuery, query);
+            byte[] response = forwardToIcann(rawQuery, query);
+            int answers = DnsMessage.answerCount(response);
+            EventBus.get().dns("ICANN " + qtype + " " + qname
+                    + " → " + (answers > 0 ? answers + " records" : "NXDOMAIN"));
+            return response;
         }
 
-        // ── Unknown TLD — could be a Handshake name not yet indexed ──────────
-        // If name index is still building, we can't know for sure.
-        // Return NXDOMAIN rather than forwarding to ICANN (HNS-first principle:
-        // unknown TLDs are Handshake names, not ICANN names).
+        // ── Unknown TLD ───────────────────────────────────────────────────────
         if (!nameIndex.isReady()) {
-            // Index still building — return NXDOMAIN with a note
             System.out.printf("[RecursiveNS] Name index still building — "
                     + "NXDOMAIN for '%s' (may exist on Handshake)%n", tld);
             return DnsMessage.buildNxdomain(query);
         }
 
-        // Index is complete — TLD is not on Handshake or ICANN → NXDOMAIN
+        // Index complete — not on Handshake or ICANN
+        EventBus.get().dns("NXDOMAIN " + qtype + " " + qname);
         return DnsMessage.buildNxdomain(query);
     }
 

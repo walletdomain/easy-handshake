@@ -93,6 +93,7 @@ public class NodeHttpServer {
         // REST API routes
         server.createContext("/api/status",  new StatusHandler());
         server.createContext("/api/block/",  new BlockHandler());
+        server.createContext("/api/events",  new SseHandler());
         server.createContext("/block/",      new RestBlockHandler());
         server.createContext("/header/",     new RestHeaderHandler());
         server.createContext("/tx/",         new RestTxHandler());
@@ -387,6 +388,91 @@ public class NodeHttpServer {
                 sendText(exchange, 400, "application/json",
                         JsonBuilder.error("Invalid index", -8));
             }
+        }
+    }
+
+    // ── GET /api/events — Server-Sent Events live stream ─────────────────────
+
+    private class SseHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            String path = exchange.getRequestURI().getPath();
+
+            // GET /api/events/history?cat=BLOCK&limit=100
+            if (path.endsWith("/history")) {
+                handleHistory(exchange);
+                return;
+            }
+
+            // GET /api/events — live SSE stream
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.getResponseHeaders().set("Cache-Control",  "no-cache");
+            exchange.getResponseHeaders().set("Connection",     "keep-alive");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.sendResponseHeaders(200, 0); // chunked
+
+            java.io.PrintWriter writer = new java.io.PrintWriter(
+                    exchange.getResponseBody(), true);
+
+            // Send a heartbeat comment to establish the connection
+            writer.print(": connected\n\n");
+            writer.flush();
+
+            EventBus.SseClient client = new EventBus.SseClient(writer);
+            EventBus.get().addClient(client);
+
+            // Keep connection open until client disconnects
+            try {
+                while (client.isActive()) {
+                    Thread.sleep(15_000);
+                    // Send SSE heartbeat comment to keep connection alive
+                    writer.print(": heartbeat\n\n");
+                    writer.flush();
+                    if (writer.checkError()) break;
+                }
+            } catch (InterruptedException ignored) {
+            } finally {
+                EventBus.get().removeClient(client);
+                exchange.close();
+            }
+        }
+
+        private void handleHistory(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            String query = exchange.getRequestURI().getQuery();
+            EventBus.Category filter = null;
+            int limit = 200;
+
+            if (query != null) {
+                for (String param : query.split("&")) {
+                    String[] kv = param.split("=", 2);
+                    if (kv.length == 2) {
+                        if (kv[0].equals("cat")) {
+                            try { filter = EventBus.Category.valueOf(kv[1]); }
+                            catch (Exception ignored) {}
+                        } else if (kv[0].equals("limit")) {
+                            try { limit = Math.min(1000, Integer.parseInt(kv[1])); }
+                            catch (Exception ignored) {}
+                        }
+                    }
+                }
+            }
+
+            var events = EventBus.get().getHistory(filter, limit);
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < events.size(); i++) {
+                if (i > 0) sb.append(",");
+                sb.append(events.get(i).toJson());
+            }
+            sb.append("]");
+
+            byte[] body = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
         }
     }
 

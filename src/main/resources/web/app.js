@@ -1,10 +1,11 @@
 'use strict';
 
-// ── Configuration ──────────────────────────────────────────────────────────
+// ── Configuration ─────────────────────────────────────────────────────────────
 
-const POLL_INTERVAL_MS = 30_000; // refresh every 30 seconds
+const POLL_INTERVAL_MS = 30_000;
+const MAX_EVENTS       = 500;
 
-// ── DOM references ──────────────────────────────────────────────────────────
+// ── DOM references ────────────────────────────────────────────────────────────
 
 const els = {
   version:    document.getElementById('version'),
@@ -14,9 +15,12 @@ const els = {
   dbSize:     document.getElementById('stat-db-size'),
   uptime:     document.getElementById('stat-uptime'),
   lastUpdate: document.getElementById('last-updated'),
+  eventsLog:  document.getElementById('events-log'),
+  sseDot:     document.getElementById('sse-dot'),
+  sseLabel:   document.getElementById('sse-label'),
 };
 
-// ── Fetch and render ────────────────────────────────────────────────────────
+// ── Status polling ────────────────────────────────────────────────────────────
 
 async function refresh() {
   try {
@@ -30,35 +34,161 @@ async function refresh() {
 }
 
 function render(data) {
-  // Version
-  els.version.textContent = 'v' + data.version;
-
-  // Sync status badge
-  const synced = data.synced;
-  els.badge.textContent = synced ? 'Synced' : 'Syncing';
-  els.badge.className   = 'status-badge ' + (synced ? 'synced' : 'syncing');
-
-  // Stats
-  els.height.textContent   = data.height.toLocaleString();
-  els.blockTip.textContent = data.blockTip.toLocaleString();
-  els.dbSize.textContent   = formatBytes(data.dbSizeBytes);
-  els.uptime.textContent   = formatUptime(data.uptimeSeconds);
-
-  // Remove loading state
-  document.querySelectorAll('.card-value').forEach(el =>
-    el.classList.remove('loading'));
-
-  // Last updated timestamp
+  els.version.textContent   = 'v' + data.version;
+  const synced              = data.synced;
+  els.badge.textContent     = synced ? 'Synced' : 'Syncing';
+  els.badge.className       = 'status-badge ' + (synced ? 'synced' : 'syncing');
+  els.height.textContent    = data.height.toLocaleString();
+  els.blockTip.textContent  = data.blockTip.toLocaleString();
+  els.dbSize.textContent    = formatBytes(data.dbSizeBytes);
+  els.uptime.textContent    = formatUptime(data.uptimeSeconds);
+  document.querySelectorAll('.card-value').forEach(el => el.classList.remove('loading'));
   els.lastUpdate.textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
 function setError(msg) {
-  els.badge.textContent = 'Offline';
-  els.badge.className   = 'status-badge error';
+  els.badge.textContent      = 'Offline';
+  els.badge.className        = 'status-badge error';
   els.lastUpdate.textContent = 'Error: ' + msg;
 }
 
-// ── Formatters ──────────────────────────────────────────────────────────────
+// ── Live events (SSE) ─────────────────────────────────────────────────────────
+
+let activeFilter  = 'ALL';
+let autoScroll    = true;
+let eventCount    = 0;
+let eventSource   = null;
+
+function initSSE() {
+  if (eventSource) eventSource.close();
+
+  setSseStatus('connecting');
+  eventSource = new EventSource('/api/events');
+
+  eventSource.onopen = () => {
+    setSseStatus('connected');
+  };
+
+  eventSource.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      appendEvent(event);
+    } catch (err) {
+      // ignore parse errors (heartbeat comments don't trigger onmessage)
+    }
+  };
+
+  eventSource.onerror = () => {
+    setSseStatus('reconnecting');
+    // Browser auto-reconnects SSE — just update status
+    setTimeout(() => {
+      if (eventSource.readyState === EventSource.CLOSED) {
+        setSseStatus('disconnected');
+        setTimeout(initSSE, 5000); // retry after 5s
+      }
+    }, 3000);
+  };
+}
+
+function setSseStatus(state) {
+  const dot   = els.sseDot;
+  const label = els.sseLabel;
+  dot.className = 'sse-dot sse-' + state;
+  label.textContent = {
+    connecting:   'connecting...',
+    connected:    'live',
+    reconnecting: 'reconnecting...',
+    disconnected: 'disconnected',
+  }[state] || state;
+}
+
+function appendEvent(event) {
+  // Remove empty state placeholder
+  const empty = els.eventsLog.querySelector('.events-empty');
+  if (empty) empty.remove();
+
+  // Apply filter
+  const visible = activeFilter === 'ALL' || event.cat === activeFilter;
+
+  const row = document.createElement('div');
+  row.className = 'event-row ' + event.css;
+  if (!visible) row.classList.add('event-hidden');
+  row.dataset.cat = event.cat;
+
+  const time = new Date(event.ts);
+  const hh   = String(time.getHours()).padStart(2, '0');
+  const mm   = String(time.getMinutes()).padStart(2, '0');
+  const ss   = String(time.getSeconds()).padStart(2, '0');
+
+  row.innerHTML =
+      `<span class="event-time">${hh}:${mm}:${ss}</span>` +
+      `<span class="event-icon">${event.icon}</span>` +
+      `<span class="event-msg">${escHtml(event.msg)}</span>`;
+
+  els.eventsLog.appendChild(row);
+  eventCount++;
+
+  // Trim to MAX_EVENTS
+  while (els.eventsLog.children.length > MAX_EVENTS) {
+    els.eventsLog.removeChild(els.eventsLog.firstChild);
+  }
+
+  if (autoScroll && visible) {
+    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function escHtml(str) {
+  return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+}
+
+// ── Filter buttons ────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.filter-btn[data-cat]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    activeFilter = btn.dataset.cat;
+    document.querySelectorAll('.filter-btn[data-cat]').forEach(b =>
+        b.classList.toggle('active', b === btn));
+    // Show/hide existing rows
+    els.eventsLog.querySelectorAll('.event-row').forEach(row => {
+      const show = activeFilter === 'ALL' || row.dataset.cat === activeFilter;
+      row.classList.toggle('event-hidden', !show);
+    });
+  });
+});
+
+// ── Auto-scroll toggle ────────────────────────────────────────────────────────
+
+const scrollToggleBtn = document.getElementById('scroll-toggle');
+scrollToggleBtn.addEventListener('click', () => {
+  autoScroll = !autoScroll;
+  scrollToggleBtn.classList.toggle('active', autoScroll);
+  scrollToggleBtn.textContent = autoScroll ? '↓ Auto-scroll' : '⏸ Paused';
+});
+scrollToggleBtn.classList.add('active'); // starts active
+
+// Pause auto-scroll when user manually scrolls up
+els.eventsLog.addEventListener('scroll', () => {
+  const log     = els.eventsLog;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  if (!atBottom && autoScroll) {
+    autoScroll = false;
+    scrollToggleBtn.classList.remove('active');
+    scrollToggleBtn.textContent = '⏸ Paused';
+  }
+});
+
+// ── Clear button ──────────────────────────────────────────────────────────────
+
+document.getElementById('clear-btn').addEventListener('click', () => {
+  els.eventsLog.innerHTML = '<div class="events-empty">Log cleared.</div>';
+  eventCount = 0;
+});
+
+// ── Formatters ────────────────────────────────────────────────────────────────
 
 function formatBytes(bytes) {
   if (bytes >= 1_073_741_824)
@@ -77,12 +207,9 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
-// ── Init ─────────────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 
-// Set loading state on all card values
-document.querySelectorAll('.card-value').forEach(el =>
-  el.classList.add('loading'));
-
-// Initial fetch then poll
+document.querySelectorAll('.card-value').forEach(el => el.classList.add('loading'));
 refresh();
 setInterval(refresh, POLL_INTERVAL_MS);
+initSSE();

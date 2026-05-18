@@ -152,12 +152,15 @@ public class ChainFollower {
                     HNSBlock block = HNSBlock.parse(rawBlock);
                     try {
                         BlockValidator.validate(block, header, h);
-                        // Update name index with new block's covenants
                         if (dnsServer != null && dnsServer.isNameIndexReady())
                             dnsServer.applyNewBlock(block);
+                        EventBus.get().block("Block " + h + " validated ✓ ("
+                                + block.txs.size() + " txs)");
                     } catch (SecurityException e) {
                         System.out.println("[ChainFollower] INVALID block at height "
                                 + h + ": " + e.getMessage());
+                        EventBus.get().block("⚠ INVALID block at height " + h
+                                + ": " + e.getMessage());
                     }
                 }
             }

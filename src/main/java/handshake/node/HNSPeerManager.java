@@ -197,6 +197,10 @@ public class HNSPeerManager {
 
         try (Database db = new Database(DB_PATH_CHAIN)) {
 
+            // Initialize event bus with persistent storage
+            handshake.node.EventBus.get().init(db);
+            handshake.node.EventBus.get().system("Node started. Database: " + DB_PATH_CHAIN);
+
             // ── Phase 1: Header sync ──────────────────────────────────────
             syncHeaderPhase(db);
 

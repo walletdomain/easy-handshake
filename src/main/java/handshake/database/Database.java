@@ -41,6 +41,7 @@ public class Database implements AutoCloseable {
     private static final String MAP_META       = "meta";
     private static final String MAP_NAME_INDEX = "nameIndex";   // name → resource bytes
     private static final String MAP_NAME_HASHES= "nameHashes";  // hashHex → name
+    private static final String MAP_EVENT_LOG  = "eventLog";    // id(Long) → event string
 
     // Meta keys
     private static final String META_BLOCK_TIP  = "block_tip";
@@ -62,6 +63,7 @@ public class Database implements AutoCloseable {
     private final MVMap<String, byte[]> meta;
     private final MVMap<String, byte[]> nameIndex;   // name → resource bytes
     private final MVMap<String, String> nameHashes;  // hashHex → name
+    private final MVMap<Long,   String> eventLog;    // id → event string
 
     // Whether to store full raw block bytes (disable for minimal footprint)
     private final boolean storeBlocks;
@@ -106,6 +108,7 @@ public class Database implements AutoCloseable {
         this.meta       = store.openMap(MAP_META);
         this.nameIndex  = store.openMap(MAP_NAME_INDEX);
         this.nameHashes = store.openMap(MAP_NAME_HASHES);
+        this.eventLog   = store.openMap(MAP_EVENT_LOG);
 
         if (!meta.containsKey(META_SCHEMA_VER)) {
             meta.put(META_SCHEMA_VER, longToBytes(SCHEMA_VERSION));
@@ -521,6 +524,9 @@ public class Database implements AutoCloseable {
     }
 
     // ── Name index accessors ──────────────────────────────────────────────────
+
+    /** Returns the persistent event log map. */
+    public MVMap<Long, String> getEventLog() { return eventLog; }
 
     /** Returns the persistent name→resource map. */
     public MVMap<String, byte[]> getNameIndex()  { return nameIndex; }
