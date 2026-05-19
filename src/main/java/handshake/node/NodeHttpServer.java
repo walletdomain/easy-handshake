@@ -230,13 +230,16 @@ public class NodeHttpServer {
 
             // Map URL paths to resource paths
             String resource = switch (path) {
-                case "/", "/index.html" -> "/web/index.html";
-                case "/style.css"       -> "/web/style.css";
-                case "/app.js"          -> "/web/app.js";
-                case "/favicon.ico"     -> "/web/favicon.ico";
-                case "/favicon.svg"     -> "/web/favicon.svg";
-                case "/hns-logo.svg"    -> "/web/hns-logo.svg";
-                default                 -> null;
+                case "/", "/index.html"  -> "/web/index.html";
+                case "/style.css"        -> "/web/style.css";
+                case "/app.js"           -> "/web/app.js";
+                case "/settings",
+                     "/settings.html"    -> "/web/settings.html";
+                case "/settings.js"      -> "/web/settings.js";
+                case "/favicon.ico"      -> "/web/favicon.ico";
+                case "/favicon.svg"      -> "/web/favicon.svg";
+                case "/hns-logo.svg"     -> "/web/hns-logo.svg";
+                default                  -> null;
             };
 
             if (resource == null) {

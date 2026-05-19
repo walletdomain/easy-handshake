@@ -16,7 +16,16 @@
     <h1>Easy Handshake</h1>
     <span class="version" id="version">—</span>
   </div>
-  <span class="status-badge" id="status-badge">Connecting...</span>
+  <div style="display:flex;align-items:center;gap:0.75rem">
+    <a href="/settings" style="font-size:0.75rem;color:var(--muted);
+         text-decoration:none;font-family:'Space Mono',monospace;
+         transition:color 0.15s"
+       onmouseover="this.style.color='var(--text)'"
+       onmouseout="this.style.color='var(--muted)'">
+      ⚙ Settings
+    </a>
+    <span class="status-badge" id="status-badge">Connecting...</span>
+  </div>
 </header>
 
 <!-- Two-column layout -->
