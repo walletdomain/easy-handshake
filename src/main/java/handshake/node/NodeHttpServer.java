@@ -59,8 +59,13 @@ public class NodeHttpServer {
     private final int        port;
     private final Instant    startTime;
     private final String     version;
-    private final ApiRouter api;
+    private final ApiRouter  api;
+    private handshake.node.dns.NameIndex nameIndex; // optional — set after DNS starts
     private HttpServer       server;
+
+    public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
+        this.nameIndex = nameIndex;
+    }
 
     public NodeHttpServer(Database db, int port, String version) {
         this.db        = db;
@@ -91,13 +96,14 @@ public class NodeHttpServer {
         });
 
         // REST API routes
-        server.createContext("/api/status",  new StatusHandler());
-        server.createContext("/api/block/",  new BlockHandler());
-        server.createContext("/api/events",  new SseHandler());
-        server.createContext("/block/",      new RestBlockHandler());
-        server.createContext("/header/",     new RestHeaderHandler());
-        server.createContext("/tx/",         new RestTxHandler());
-        server.createContext("/coin/",       new RestCoinHandler());
+        server.createContext("/api/status",          new StatusHandler());
+        server.createContext("/api/block/",          new BlockHandler());
+        server.createContext("/api/events",          new SseHandler());
+        server.createContext("/api/nameindex",       new NameIndexStatusHandler());
+        server.createContext("/block/",              new RestBlockHandler());
+        server.createContext("/header/",             new RestHeaderHandler());
+        server.createContext("/tx/",                 new RestTxHandler());
+        server.createContext("/coin/",               new RestCoinHandler());
 
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -468,6 +474,37 @@ public class NodeHttpServer {
             sb.append("]");
 
             byte[] body = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        }
+    }
+
+    // ── GET /api/nameindex — name index build status ──────────────────────────
+
+    private class NameIndexStatusHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            String json;
+            if (nameIndex == null) {
+                json = "{\"ready\":false,\"progress\":0,\"total\":0,"
+                        + "\"names\":0,\"pct\":0,\"eta\":-1}";
+            } else {
+                boolean ready    = nameIndex.isReady();
+                int     progress = nameIndex.getBuildProgress();
+                int     total    = nameIndex.getBuildTip();
+                int     names    = nameIndex.size();
+                int     pct      = total > 0 ? (int)(100.0 * progress / total) : (ready ? 100 : 0);
+                long    eta      = nameIndex.getEtaSeconds();
+                json = String.format(
+                        "{\"ready\":%b,\"progress\":%d,\"total\":%d,"
+                                + "\"names\":%d,\"pct\":%d,\"eta\":%d}",
+                        ready, progress, total, names, pct, eta);
+            }
+            byte[] body = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
             exchange.sendResponseHeaders(200, body.length);

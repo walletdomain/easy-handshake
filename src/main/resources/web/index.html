@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+
 <header>
   <div class="header-left">
     <img src="/hns-logo.svg" alt="Handshake" class="header-logo">
@@ -18,128 +19,160 @@
   <span class="status-badge" id="status-badge">Connecting...</span>
 </header>
 
-<!-- Stats grid -->
-<div class="grid" id="stats-grid">
-  <div class="card">
-    <div class="card-label">Block Height</div>
-    <div class="card-value" id="stat-height">—</div>
-    <div class="card-sub">headers synced</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Block Data</div>
-    <div class="card-value" id="stat-block-tip">—</div>
-    <div class="card-sub">full blocks stored</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Database Size</div>
-    <div class="card-value" id="stat-db-size">—</div>
-    <div class="card-sub">on disk · LZ4 compressed</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Uptime</div>
-    <div class="card-value" id="stat-uptime">—</div>
-    <div class="card-sub">since last start</div>
-  </div>
-</div>
+<!-- Two-column layout -->
+<div class="layout">
 
-<!-- Live events panel -->
-<div class="section-title">
-  Live Events
-  <span class="sse-dot" id="sse-dot" title="SSE connection status"></span>
-  <span class="sse-label" id="sse-label">connecting...</span>
-</div>
+  <!-- LEFT COLUMN -->
+  <div class="layout-left">
 
-<div class="events-panel">
-  <!-- Filter bar -->
-  <div class="events-filters">
-    <button class="filter-btn active" data-cat="ALL">All</button>
-    <button class="filter-btn" data-cat="BLOCK">⛏ Block</button>
-    <button class="filter-btn" data-cat="DNS">🌐 DNS</button>
-    <button class="filter-btn" data-cat="PEER">🔗 Peer</button>
-    <button class="filter-btn" data-cat="NAME">📛 Name</button>
-    <button class="filter-btn" data-cat="SYSTEM">⚙ System</button>
-    <div class="filter-spacer"></div>
-    <button class="filter-btn" id="scroll-toggle" title="Toggle auto-scroll">
-      ↓ Auto-scroll
-    </button>
-    <button class="filter-btn" id="clear-btn" title="Clear log">Clear</button>
-  </div>
+    <!-- Stats grid -->
+    <div class="grid" id="stats-grid">
+      <div class="card">
+        <div class="card-label">Block Height</div>
+        <div class="card-value" id="stat-height">—</div>
+        <div class="card-sub">headers synced</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Block Data</div>
+        <div class="card-value" id="stat-block-tip">—</div>
+        <div class="card-sub">full blocks stored</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Database Size</div>
+        <div class="card-value" id="stat-db-size">—</div>
+        <div class="card-sub">on disk · LZ4 compressed</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Uptime</div>
+        <div class="card-value" id="stat-uptime">—</div>
+        <div class="card-sub">since last start</div>
+      </div>
+    </div>
 
-  <!-- Event log -->
-  <div class="events-log" id="events-log">
-    <div class="events-empty">Waiting for events...</div>
-  </div>
-</div>
+    <!-- Name index progress bar (hidden when ready) -->
+    <div id="nameindex-progress" style="display:none" class="nameindex-progress">
+      <div class="nameindex-header">
+        <span class="nameindex-title">📛 Building Name Index</span>
+        <span class="nameindex-stats">
+            <span id="nameindex-names">—</span>
+            &nbsp;·&nbsp;
+            <span id="nameindex-blocks">—</span>
+            &nbsp;<span id="nameindex-eta"></span>
+          </span>
+        <span id="nameindex-pct" class="nameindex-pct">0%</span>
+      </div>
+      <div class="nameindex-track">
+        <div id="nameindex-fill" class="nameindex-fill" style="width:0%"></div>
+      </div>
+    </div>
 
-<!-- API Endpoints -->
-<div class="section-title">API Endpoints</div>
-<div class="api-links">
-  <a class="api-link" href="/api/status">/api/status</a>
-  <a class="api-link" href="/api/block/0">/api/block/{height}</a>
-  <a class="api-link" href="/api/events/history">/api/events/history</a>
-  <a class="api-link" href="/block/0">/block/{hash|height}</a>
-  <a class="api-link" href="/header/0">/header/{hash|height}</a>
-  <a class="api-link" href="/tx/">/tx/{txhash}</a>
-  <a class="api-link" href="/coin/">/coin/{txhash}/{index}</a>
-  <span class="api-link planned">/api/name/{tld}<span class="tag tag-planned">planned</span></span>
-  <span class="api-link planned">/dns-query<span class="tag tag-planned">DoH · RFC 8484</span></span>
-</div>
+    <!-- Features -->
+    <div class="section-title">Modules</div>
+    <div class="feature-grid">
+      <div class="feature on">
+        <span class="feature-dot"></span>
+        <span class="feature-name">Full Node</span>
+        <span class="feature-desc">Syncing &amp; serving blocks to peers</span>
+      </div>
+      <div class="feature on">
+        <span class="feature-dot"></span>
+        <span class="feature-name">Chain Follower</span>
+        <span class="feature-desc">Tracking new blocks every 60s</span>
+      </div>
+      <div class="feature on">
+        <span class="feature-dot"></span>
+        <span class="feature-name">Peer Server</span>
+        <span class="feature-desc">Accepting inbound connections on port 44806</span>
+      </div>
+      <div class="feature on">
+        <span class="feature-dot"></span>
+        <span class="feature-name">DNS Resolver</span>
+        <span class="feature-desc">HNS-first · port 5349 auth · port 5350 recursive</span>
+      </div>
+      <div class="feature planned">
+        <span class="feature-dot"></span>
+        <span class="feature-name">Wallet</span>
+        <span class="feature-desc">Manage HNS addresses and names</span>
+      </div>
+      <div class="feature planned">
+        <span class="feature-dot"></span>
+        <span class="feature-name">Miner</span>
+        <span class="feature-desc">CPU / Stratum mining support</span>
+      </div>
+    </div>
 
-<!-- JSON-RPC -->
-<div class="section-title">JSON-RPC (POST /)</div>
-<div class="api-links">
-  <span class="api-link">getblockchaininfo</span>
-  <span class="api-link">getblock</span>
-  <span class="api-link">getblockbyheight</span>
-  <span class="api-link">getblockheader</span>
-  <span class="api-link">getbestblockhash</span>
-  <span class="api-link">getblockcount</span>
-  <span class="api-link">getblockhash</span>
-  <span class="api-link">getdifficulty</span>
-  <span class="api-link">getrawtransaction</span>
-  <span class="api-link">decoderawtransaction</span>
-  <span class="api-link">gettxout</span>
-  <span class="api-link">gettxoutsetinfo</span>
-  <span class="api-link">getinfo</span>
-  <span class="api-link">getnetworkinfo</span>
-  <span class="api-link">getmempoolinfo</span>
-  <span class="api-link">getrawmempool</span>
-</div>
+    <!-- API Endpoints -->
+    <div class="section-title">API Endpoints</div>
+    <div class="api-links">
+      <a class="api-link" href="/api/status">/api/status</a>
+      <a class="api-link" href="/api/block/0">/api/block/{height}</a>
+      <a class="api-link" href="/api/events/history">/api/events/history</a>
+      <a class="api-link" href="/api/nameindex">/api/nameindex</a>
+      <a class="api-link" href="/block/0">/block/{hash|height}</a>
+      <a class="api-link" href="/header/0">/header/{hash|height}</a>
+      <a class="api-link" href="/tx/">/tx/{txhash}</a>
+      <a class="api-link" href="/coin/">/coin/{txhash}/{index}</a>
+      <span class="api-link planned">/api/name/{tld}<span class="tag tag-planned">planned</span></span>
+      <span class="api-link planned">/dns-query<span class="tag tag-planned">DoH · RFC 8484</span></span>
+    </div>
 
-<!-- Features -->
-<div class="section-title">Features</div>
-<div class="feature-grid">
-  <div class="feature on">
-    <span class="feature-dot"></span>
-    <span class="feature-name">Full Node</span>
-    <span class="feature-desc">Syncing &amp; serving blocks to peers</span>
-  </div>
-  <div class="feature on">
-    <span class="feature-dot"></span>
-    <span class="feature-name">Chain Follower</span>
-    <span class="feature-desc">Tracking new blocks every 60s</span>
-  </div>
-  <div class="feature on">
-    <span class="feature-dot"></span>
-    <span class="feature-name">Peer Server</span>
-    <span class="feature-desc">Accepting inbound connections on port 44806</span>
-  </div>
-  <div class="feature on">
-    <span class="feature-dot"></span>
-    <span class="feature-name">DNS Resolver</span>
-    <span class="feature-desc">HNS-first · port 5349 auth · port 5350 recursive</span>
-  </div>
-  <div class="feature planned">
-    <span class="feature-dot"></span>
-    <span class="feature-name">Wallet</span>
-    <span class="feature-desc">Manage HNS addresses and names</span>
-  </div>
-  <div class="feature planned">
-    <span class="feature-dot"></span>
-    <span class="feature-name">Miner</span>
-    <span class="feature-desc">CPU / Stratum mining support</span>
-  </div>
-</div>
+    <!-- JSON-RPC -->
+    <div class="section-title">JSON-RPC (POST /)</div>
+    <div class="api-links">
+      <span class="api-link">getblockchaininfo</span>
+      <span class="api-link">getblock</span>
+      <span class="api-link">getblockbyheight</span>
+      <span class="api-link">getblockheader</span>
+      <span class="api-link">getbestblockhash</span>
+      <span class="api-link">getblockcount</span>
+      <span class="api-link">getblockhash</span>
+      <span class="api-link">getdifficulty</span>
+      <span class="api-link">getrawtransaction</span>
+      <span class="api-link">decoderawtransaction</span>
+      <span class="api-link">gettxout</span>
+      <span class="api-link">gettxoutsetinfo</span>
+      <span class="api-link">getinfo</span>
+      <span class="api-link">getnetworkinfo</span>
+      <span class="api-link">getmempoolinfo</span>
+      <span class="api-link">getrawmempool</span>
+    </div>
+
+  </div><!-- end layout-left -->
+
+  <!-- RIGHT COLUMN — Live Events -->
+  <div class="layout-right">
+
+    <div class="section-title">
+      Live Events
+      <span class="sse-dot" id="sse-dot" title="SSE connection status"></span>
+      <span class="sse-label" id="sse-label">connecting...</span>
+    </div>
+
+    <div class="events-panel">
+      <!-- Filter bar -->
+      <div class="events-filters">
+        <button class="filter-btn active" data-cat="ALL">All</button>
+        <button class="filter-btn" data-cat="BLOCK">⛏ Block</button>
+        <button class="filter-btn" data-cat="DNS">🌐 DNS</button>
+        <button class="filter-btn" data-cat="PEER">🔗 Peer</button>
+        <button class="filter-btn" data-cat="NAME">📛 Name</button>
+        <button class="filter-btn" data-cat="SYSTEM">⚙ System</button>
+        <div class="filter-spacer"></div>
+        <button class="filter-btn" id="scroll-toggle" title="Toggle auto-scroll">
+          ↓ Auto-scroll
+        </button>
+        <button class="filter-btn" id="clear-btn" title="Clear log">Clear</button>
+      </div>
+
+      <!-- Event log -->
+      <div class="events-log" id="events-log">
+        <div class="events-empty">Waiting for events...</div>
+      </div>
+    </div>
+
+  </div><!-- end layout-right -->
+
+</div><!-- end layout -->
 
 <footer>
   <span>easy-handshake · Handshake blockchain node</span>

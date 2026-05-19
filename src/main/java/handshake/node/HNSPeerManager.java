@@ -234,6 +234,9 @@ public class HNSPeerManager {
             // Wire DNS server into ChainFollower so new blocks update the name index
             follower.setDnsServer(dnsServer);
 
+            // Wire NameIndex into HTTP server for progress reporting
+            httpServer.setNameIndex(dnsServer.getNameIndex());
+
             System.out.println("\nNode is running. Press Ctrl+C to stop.");
             System.out.println("Dashboard:     http://localhost:"
                     + NodeHttpServer.DEFAULT_PORT);

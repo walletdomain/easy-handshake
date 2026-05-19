@@ -207,6 +207,47 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
+// ── Name index progress ───────────────────────────────────────────────────────
+
+let nameIndexReady = false;
+
+async function pollNameIndex() {
+  if (nameIndexReady) return;
+  try {
+    const res  = await fetch('/api/nameindex');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const bar = document.getElementById('nameindex-bar');
+    if (!bar) return;
+
+    if (data.ready) {
+      nameIndexReady = true;
+      document.getElementById('nameindex-progress').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('nameindex-progress').style.display = 'block';
+    document.getElementById('nameindex-fill').style.width = data.pct + '%';
+    document.getElementById('nameindex-pct').textContent  = data.pct + '%';
+    document.getElementById('nameindex-names').textContent =
+        data.names.toLocaleString() + ' names';
+    document.getElementById('nameindex-blocks').textContent =
+        data.progress.toLocaleString() + ' / ' + data.total.toLocaleString() + ' blocks';
+
+    const eta = document.getElementById('nameindex-eta');
+    if (data.eta > 0) {
+      eta.textContent = '· ETA ' + formatUptime(data.eta);
+    } else {
+      eta.textContent = '';
+    }
+  } catch (err) { /* ignore */ }
+}
+
+// Poll every 5 seconds while building
+setInterval(pollNameIndex, 5_000);
+pollNameIndex();
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.querySelectorAll('.card-value').forEach(el => el.classList.add('loading'));

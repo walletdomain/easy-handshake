@@ -102,7 +102,7 @@ public class DnsServer {
 
     // ── Status ────────────────────────────────────────────────────────────────
 
-    public boolean isNameIndexReady() { return nameIndexReady; }
-    public int     getNameCount()     { return nameIndex.size(); }
-    public NameIndex getNameIndex()   { return nameIndex; }
+    public boolean   isNameIndexReady() { return nameIndexReady; }
+    public NameIndex getNameIndex()     { return nameIndex; }
+    public int       getNameCount()     { return nameIndex.size(); }
 }
