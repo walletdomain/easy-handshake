@@ -293,8 +293,8 @@ h1 {
 .layout-right .events-log {
   flex: 1;
   height: auto;
-  min-height: 200px;
-  max-height: calc(100vh - 12rem);
+  min-height: 150px;
+  max-height: calc(50vh - 6rem);
 }
 
 /* ── Two-column stats grid (2 columns in left panel) ── */

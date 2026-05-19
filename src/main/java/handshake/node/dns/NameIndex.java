@@ -72,14 +72,16 @@ public class NameIndex {
     public void build() {
         int tip = db.getBlockDataTip();
 
-        // Check if index was already built up to this tip
+        // Check if index was already built
         byte[] builtHeightBytes = db.getMeta(META_BUILT_HEIGHT);
         if (builtHeightBytes != null && !index.isEmpty()) {
             int builtHeight = ((builtHeightBytes[0]&0xFF)<<24)
                     | ((builtHeightBytes[1]&0xFF)<<16)
                     | ((builtHeightBytes[2]&0xFF)<<8)
                     |  (builtHeightBytes[3]&0xFF);
+
             if (builtHeight >= tip) {
+                // Fully current — just load
                 ready = true;
                 System.out.printf("[NameIndex] Loaded from disk. %,d names indexed "
                         + "(built at height %d).%n", index.size(), builtHeight);
@@ -88,7 +90,34 @@ public class NameIndex {
                                 + " names (built at block " + builtHeight + ")");
                 return;
             }
-            System.out.printf("[NameIndex] Resuming from height %d...%n", builtHeight + 1);
+
+            int gap = tip - builtHeight;
+            if (gap <= 1000) {
+                // Small gap — catch up by applying missing blocks directly
+                System.out.printf("[NameIndex] Catching up %d blocks (%d → %d)...%n",
+                        gap, builtHeight, tip);
+                ready = true; // mark ready so applyBlock() works
+                for (int h = builtHeight + 1; h <= tip; h++) {
+                    byte[] raw = db.getRawBlock(h);
+                    if (raw == null) continue;
+                    HNSBlock block = HNSBlock.parse(raw);
+                    for (HNSBlock.Tx tx : block.txs)
+                        for (HNSBlock.Output output : tx.outputs)
+                            processOutput(output);
+                }
+                // Save the new built height
+                byte[] tipBytes = {(byte)(tip>>24),(byte)(tip>>16),(byte)(tip>>8),(byte)tip};
+                db.putMeta(META_BUILT_HEIGHT, tipBytes);
+                db.commitNameIndex();
+                System.out.printf("[NameIndex] Caught up. %,d names indexed.%n", index.size());
+                handshake.node.EventBus.get().name(
+                        "Name index ready — " + String.format("%,d", index.size())
+                                + " Handshake names indexed");
+                return;
+            }
+
+            // Large gap — need full rescan
+            System.out.printf("[NameIndex] Gap too large (%d blocks) — rebuilding...%n", gap);
         }
 
         System.out.println("[NameIndex] Building from " + (tip + 1) + " blocks...");
@@ -148,6 +177,7 @@ public class NameIndex {
     }
 
     public void applyBlock(HNSBlock block) {
+        if (!ready) return; // don't apply new blocks during initial build scan
         for (HNSBlock.Tx tx : block.txs)
             for (HNSBlock.Output output : tx.outputs)
                 processOutput(output);

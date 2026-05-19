@@ -1,6 +1,7 @@
 package handshake;
 
 import handshake.node.Config;
+import handshake.node.SetupServer;
 import handshake.node.HNSPeerManager;
 
 /**
@@ -8,8 +9,8 @@ import handshake.node.HNSPeerManager;
  *
  * Startup flow:
  *   1. Load config from config.mv.db
- *   2. If first run → start HTTP server only, serve setup wizard
- *   3. If configured → start enabled modules
+ *   2. If first run → start SetupServer, serve wizard, wait for completion
+ *   3. If configured → start enabled modules via HNSPeerManager
  *
  * To run from the fat JAR:
  *   java -Xmx2g -jar easy-handshake.jar
@@ -25,23 +26,14 @@ public class Main {
         Config config = Config.load();
 
         if (config.isFirstRun()) {
-            // First run — start setup wizard only
-            // TODO: start SetupServer on http port and serve wizard
-            System.out.println("=== Easy Handshake — First Run Setup ===");
-            System.out.println("No configuration found.");
-            System.out.println("Starting setup wizard at http://localhost:"
-                    + config.httpPort());
-            System.out.println("(Setup wizard coming soon — starting with defaults for now)");
-            System.out.println();
-
-            // For now, auto-complete setup with FULL_NODE + DNS enabled
-            // until the setup wizard is built
-            config.completeSetup(java.util.Set.of(
-                    Config.Module.FULL_NODE,
-                    Config.Module.DNS));
+            // First run — serve setup wizard and wait for user to configure
+            SetupServer setup = new SetupServer(config);
+            setup.runUntilComplete();
+            // Small pause to let the browser receive the redirect response
+            Thread.sleep(500);
         }
 
-        // Start enabled modules
+        // Start the node with the configured modules
         HNSPeerManager.main(args);
     }
 }

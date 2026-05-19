@@ -67,6 +67,10 @@ function initSSE() {
 
   eventSource.onopen = () => {
     setSseStatus('connected');
+    // Scroll to bottom after backfill arrives (small delay to let DOM update)
+    setTimeout(() => {
+      els.eventsLog.scrollTop = els.eventsLog.scrollHeight;
+    }, 100);
   };
 
   eventSource.onmessage = (e) => {
@@ -134,7 +138,7 @@ function appendEvent(event) {
   }
 
   if (autoScroll && visible) {
-    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    els.eventsLog.scrollTop = els.eventsLog.scrollHeight;
   }
 }
 
