@@ -42,7 +42,8 @@ public class SetupServer {
 
     /** Starts the setup server and blocks until setup is complete. */
     public void runUntilComplete() throws Exception {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        String bind = config.httpBind();
+        server = HttpServer.create(new InetSocketAddress(bind, port), 0);
         server.setExecutor(Executors.newFixedThreadPool(2));
         server.createContext("/",       this::handleRoot);
         server.createContext("/setup",  this::handleSetup);
@@ -104,6 +105,19 @@ public class SetupServer {
 
         // Always enable FULL_NODE — it's the foundation
         enabled.add(Config.Module.FULL_NODE);
+
+        // Save deployment type and set bind address accordingly
+        String deployType = params.getOrDefault("deployment.type",
+                Config.DeploymentType.DESKTOP.name());
+        try {
+            Config.DeploymentType dt = Config.DeploymentType.valueOf(deployType);
+            config.setDeploymentType(dt);
+            System.out.println("[Setup] Deployment type: " + dt.displayName
+                    + " (bind=" + dt.defaultBind + ")");
+        } catch (Exception e) {
+            config.set(Config.KEY_DEPLOYMENT_TYPE,
+                    Config.DeploymentType.DESKTOP.name());
+        }
 
         // Save port settings
         saveIfValid(params, Config.KEY_HTTP_PORT,      Config.DEFAULT_HTTP_PORT);
@@ -451,61 +465,143 @@ public class SetupServer {
         sb.append("""
                   </div><!-- end modules -->
 
-                  <details id="advanced">
-                    <summary>⚙ Advanced — Port Configuration</summary>
-                    <div class="advanced-grid">
-                      <div class="field">
-                        <label>HTTP Dashboard Port</label>
-                        <input type="number" name="http.port" value="8888" min="1024" max="65535">
+                  <div class="step-title" style="margin-top:1.5rem">
+                    Where are you running this node?
+                  </div>
+                  <div class="step-sub">
+                    This determines who can access your dashboard.
+                  </div>
+
+                  <div class="modules" style="margin-bottom:1.2rem">
+                    <div class="module selected" id="deploy-DESKTOP"
+                         onclick="selectDeploy('DESKTOP')">
+                      <div class="module-check">✓</div>
+                      <div class="module-body">
+                        <div class="module-header">
+                          <span class="module-icon">🖥</span>
+                          <span class="module-name">Personal desktop</span>
+                        </div>
+                        <div class="module-desc">
+                          Dashboard only accessible on this machine (127.0.0.1)
+                        </div>
                       </div>
-                      <div class="field">
-                        <label>P2P Brontide Port</label>
-                        <input type="number" name="p2p.port" value="44806" min="1024" max="65535">
-                      </div>
-                      <div class="field">
-                        <label>DNS Authoritative Port</label>
-                        <input type="number" name="dns.auth.port" value="5349" min="1024" max="65535">
-                      </div>
-                      <div class="field">
-                        <label>DNS Recursive Port</label>
-                        <input type="number" name="dns.recursive.port" value="5350" min="1024" max="65535">
-                      </div>
-                      <div class="field full">
-                        <label>Upstream DNS Override (leave blank for auto-detect)</label>
-                        <input type="text" name="dns.upstream" value=""
-                               placeholder="e.g. 10.2.0.1 — your router or ISP DNS">
-                      </div>
+                      <input type="radio" name="deployment.type" value="DESKTOP"
+                             id="radio-DESKTOP" style="display:none" checked>
                     </div>
-                  </details>
-
-                  <button type="submit" class="btn-start">Start Node →</button>
-                </form>
-
-                <div class="disclaimer">
-                  Settings are saved to <code>config.mv.db</code> in the working directory.<br>
-                  Blockchain data will be stored in <code>chain.mv.db</code> (~10 GB for full node).
+                    <div class="module" id="deploy-HOME_SERVER"
+                         onclick="selectDeploy('HOME_SERVER')">
+                      <div class="module-check"></div>
+                      <div class="module-body">
+                        <div class="module-header">
+                          <span class="module-icon">🏠</span>
+                          <span class="module-name">Home server</span>
+                        </div>
+                        <div class="module-desc">
+                          Dashboard accessible on your local network (0.0.0.0)
+                        </div>
+                      </div>
+                      <input type="radio" name="deployment.type" value="HOME_SERVER"
+                             id="radio-HOME_SERVER" style="display:none">
+                    </div>
+                    """ +
+                // VPS card — pre-selected if running headless
+                (Config.isHeadless()
+                        ? "<div class=\"module selected\" id=\"deploy-VPS\" onclick=\"selectDeploy('VPS')\">"
+                          + "<div class=\"module-check\">✓</div>"
+                        : "<div class=\"module\" id=\"deploy-VPS\" onclick=\"selectDeploy('VPS')\">"
+                          + "<div class=\"module-check\"></div>") +
+                """
+                  <div class="module-body">
+                    <div class="module-header">
+                      <span class="module-icon">☁</span>
+                      <span class="module-name">VPS / Cloud server</span>
+                    </div>
+                    <div class="module-desc">
+                      Dashboard accessible remotely (0.0.0.0) — secure with a firewall
+                    </div>
+                    <div class="storage-note">&#9888; Restrict port """ + config.httpPort() + """
+ with your firewall</div>
+                      </div>
+                      <input type="radio" name="deployment.type" value="VPS"
+                             id="radio-VPS" style="display:none" """ +
+                (Config.isHeadless() ? "checked" : "") +
+                """
+                  >
                 </div>
               </div>
+                <summary>⚙ Advanced — Port Configuration</summary>
+                <div class="advanced-grid">
+                  <div class="field">
+                    <label>HTTP Dashboard Port</label>
+                    <input type="number" name="http.port" value="8888" min="1024" max="65535">
+                  </div>
+                  <div class="field">
+                    <label>P2P Brontide Port</label>
+                    <input type="number" name="p2p.port" value="44806" min="1024" max="65535">
+                  </div>
+                  <div class="field">
+                    <label>DNS Authoritative Port</label>
+                    <input type="number" name="dns.auth.port" value="5349" min="1024" max="65535">
+                  </div>
+                  <div class="field">
+                    <label>DNS Recursive Port</label>
+                    <input type="number" name="dns.recursive.port" value="5350" min="1024" max="65535">
+                  </div>
+                  <div class="field full">
+                    <label>Upstream DNS Override (leave blank for auto-detect)</label>
+                    <input type="text" name="dns.upstream" value=""
+                           placeholder="e.g. 10.2.0.1 — your router or ISP DNS">
+                  </div>
+                </div>
+              </details>
 
-              <script>
-                function toggleModule(name) {
-                  const card = document.getElementById('card-' + name);
-                  const chk  = document.getElementById('chk-' + name);
-                  const sel  = card.classList.toggle('selected');
-                  chk.checked = sel;
+              <button type="submit" class="btn-start">Start Node →</button>
+            </form>
+
+            <div class="disclaimer">
+              Settings are saved to <code>config.mv.db</code> in the working directory.<br>
+              Blockchain data will be stored in <code>chain.mv.db</code> (~10 GB for full node).
+            </div>
+          </div>
+
+          <script>
+            function toggleModule(name) {
+              const card = document.getElementById('card-' + name);
+              const chk  = document.getElementById('chk-' + name);
+              const sel  = card.classList.toggle('selected');
+              chk.checked = sel;
+            }
+            function selectDeploy(type) {
+              ['DESKTOP','HOME_SERVER','VPS'].forEach(t => {
+                const card  = document.getElementById('deploy-' + t);
+                const radio = document.getElementById('radio-' + t);
+                const check = card.querySelector('.module-check');
+                if (t === type) {
+                  card.classList.add('selected');
+                  radio.checked = true;
+                  check.textContent = '✓';
+                } else {
+                  card.classList.remove('selected');
+                  radio.checked = false;
+                  check.textContent = '';
                 }
-                // Show advanced section if DNS is selected
-                document.querySelectorAll('input[type=checkbox]').forEach(chk => {
-                  chk.addEventListener('change', () => {
-                    const dnsChk = document.getElementById('chk-DNS');
-                    if (dnsChk && dnsChk.checked)
-                      document.getElementById('advanced').open = true;
-                  });
-                });
-              </script>
-            </body>
-            </html>
-            """);
+              });
+              // Auto-open advanced when VPS selected
+              if (type === 'VPS' || type === 'HOME_SERVER')
+                document.getElementById('advanced').open = true;
+            }
+            // Show advanced section if DNS is selected
+            document.querySelectorAll('input[type=checkbox]').forEach(chk => {
+              chk.addEventListener('change', () => {
+                const dnsChk = document.getElementById('chk-DNS');
+                if (dnsChk && dnsChk.checked)
+                  document.getElementById('advanced').open = true;
+              });
+            });
+          </script>
+        </body>
+        </html>
+        """);
 
         return sb.toString();
     }

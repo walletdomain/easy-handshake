@@ -152,11 +152,16 @@ public class Config implements AutoCloseable {
 
     private void applyDefaults() {
         setIfAbsent(KEY_HTTP_PORT,        DEFAULT_HTTP_PORT);
+        setIfAbsent(KEY_HTTP_BIND,        DEFAULT_HTTP_BIND);
         setIfAbsent(KEY_P2P_PORT,         DEFAULT_P2P_PORT);
         setIfAbsent(KEY_DNS_AUTH_PORT,    DEFAULT_DNS_AUTH);
         setIfAbsent(KEY_DNS_REC_PORT,     DEFAULT_DNS_REC);
         setIfAbsent(KEY_DNS_UPSTREAM,     DEFAULT_DNS_UPSTREAM);
         setIfAbsent(KEY_STRATUM_PORT,     DEFAULT_STRATUM_PORT);
+        setIfAbsent(KEY_DEPLOYMENT_TYPE,
+                isHeadless()
+                        ? DeploymentType.VPS.name()
+                        : DeploymentType.DESKTOP.name());
         // Module defaults
         for (Module m : Module.values())
             setIfAbsent(m.key(), String.valueOf(m.defaultEnabled));
@@ -248,7 +253,70 @@ public class Config implements AutoCloseable {
             settings.put(key, value);
     }
 
-    // ── Convenience port accessors ────────────────────────────────────────────
+    // ── Deployment type ───────────────────────────────────────────────────────
+
+    public enum DeploymentType {
+        DESKTOP("Personal desktop",
+                "Dashboard accessible on this machine only",
+                "127.0.0.1"),
+        HOME_SERVER("Home server",
+                "Dashboard accessible on your local network",
+                "0.0.0.0"),
+        VPS("VPS / Cloud server",
+                "Dashboard accessible remotely — secure with a firewall",
+                "0.0.0.0");
+
+        public final String displayName;
+        public final String description;
+        public final String defaultBind;
+
+        DeploymentType(String displayName, String description, String defaultBind) {
+            this.displayName  = displayName;
+            this.description  = description;
+            this.defaultBind  = defaultBind;
+        }
+    }
+
+    public static final String KEY_DEPLOYMENT_TYPE = "deployment.type";
+    public static final String KEY_HTTP_BIND       = "http.bind";
+    public static final String DEFAULT_HTTP_BIND   = autoDetectBind();
+
+    /** Auto-detects appropriate bind address based on environment. */
+    private static String autoDetectBind() {
+        try {
+            boolean headless = java.awt.GraphicsEnvironment.isHeadless();
+            return headless ? "0.0.0.0" : "127.0.0.1";
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
+    }
+
+    /** Returns true if running in a headless (server/VPS) environment. */
+    public static boolean isHeadless() {
+        try {
+            return java.awt.GraphicsEnvironment.isHeadless();
+        } catch (Exception e) {
+            return true; // assume headless if we can't tell
+        }
+    }
+
+    public DeploymentType getDeploymentType() {
+        try {
+            return DeploymentType.valueOf(
+                    get(KEY_DEPLOYMENT_TYPE, DeploymentType.DESKTOP.name()));
+        } catch (Exception e) {
+            return DeploymentType.DESKTOP;
+        }
+    }
+
+    public void setDeploymentType(DeploymentType type) {
+        set(KEY_DEPLOYMENT_TYPE, type.name());
+        set(KEY_HTTP_BIND, type.defaultBind);
+    }
+
+    public String httpBind() {
+        return get(KEY_HTTP_BIND, DEFAULT_HTTP_BIND);
+    }
 
     public int httpPort()      { return getInt(KEY_HTTP_PORT,      8888); }
     public int p2pPort()       { return getInt(KEY_P2P_PORT,       44806); }

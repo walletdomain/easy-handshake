@@ -86,7 +86,9 @@ public class NodeHttpServer {
     // -------------------------------------------------------------------------
 
     public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        String bind = config.httpBind();
+        server = HttpServer.create(new InetSocketAddress(bind, port), 0);
+        System.out.println("[HTTP] Binding to " + bind + ":" + port);
 
         // JSON-RPC dispatcher (POST /)
         server.createContext("/", exchange -> {
