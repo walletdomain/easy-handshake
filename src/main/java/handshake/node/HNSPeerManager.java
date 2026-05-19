@@ -216,40 +216,45 @@ public class HNSPeerManager {
             server.start();
 
             // ── Phase 4: Embedded HTTP dashboard and REST API ─────────────
-            NodeHttpServer httpServer = new NodeHttpServer(db);
+            Config cfg = Config.load();
+            NodeHttpServer httpServer = new NodeHttpServer(db,
+                    cfg.httpPort(), "1.0.0");
             httpServer.start();
 
             // ── Phase 5: Follow the live chain ────────────────────────────
-            // Background thread checks for new blocks every 60 seconds
             ChainFollower follower = new ChainFollower(db);
             follower.start();
 
             // ── Phase 6: DNS resolver ─────────────────────────────────────
-            // Authoritative (port 5349) + recursive (port 5350)
-            // Name index builds in background from block database
-            handshake.node.dns.DnsServer dnsServer =
-                    new handshake.node.dns.DnsServer(db);
-            dnsServer.start();
-
-            // Wire DNS server into ChainFollower so new blocks update the name index
-            follower.setDnsServer(dnsServer);
-
-            // Wire NameIndex into HTTP server for progress reporting
-            httpServer.setNameIndex(dnsServer.getNameIndex());
+            handshake.node.dns.DnsServer dnsServer = null;
+            if (cfg.isEnabled(Config.Module.DNS)) {
+                dnsServer = new handshake.node.dns.DnsServer(db,
+                        cfg.dnsAuthPort(), cfg.dnsRecPort());
+                dnsServer.start();
+                follower.setDnsServer(dnsServer);
+                httpServer.setNameIndex(dnsServer.getNameIndex());
+                // Apply upstream DNS override if configured
+                String upstream = cfg.dnsUpstream();
+                if (!upstream.isBlank())
+                    handshake.node.dns.RecursiveResolver.setUpstreamDns(upstream);
+            }
 
             System.out.println("\nNode is running. Press Ctrl+C to stop.");
-            System.out.println("Dashboard:     http://localhost:"
-                    + NodeHttpServer.DEFAULT_PORT);
-            System.out.println("Brontide:      port 44806");
-            System.out.println("DNS Auth:      port 5349");
-            System.out.println("DNS Recursive: port 5350");
+            System.out.println("Dashboard:     http://localhost:" + cfg.httpPort());
+            System.out.println("Brontide:      port " + cfg.p2pPort());
+            if (cfg.isEnabled(Config.Module.DNS)) {
+                System.out.println("DNS Auth:      port " + cfg.dnsAuthPort());
+                System.out.println("DNS Recursive: port " + cfg.dnsRecPort());
+            }
+
+            final handshake.node.dns.DnsServer finalDns = dnsServer;
 
             // Keep running until interrupted
             try {
                 Thread.currentThread().join();
             } catch (InterruptedException e) {
                 System.out.println("Shutting down...");
-                dnsServer.stop();
+                if (finalDns != null) finalDns.stop();
                 follower.stop();
                 httpServer.stop();
                 server.stop();

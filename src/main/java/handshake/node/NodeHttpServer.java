@@ -61,6 +61,7 @@ public class NodeHttpServer {
     private final String     version;
     private final ApiRouter  api;
     private handshake.node.dns.NameIndex nameIndex; // optional — set after DNS starts
+    private final Config config;
     private HttpServer       server;
 
     public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
@@ -73,6 +74,7 @@ public class NodeHttpServer {
         this.version   = version;
         this.startTime = Instant.now();
         this.api       = new ApiRouter(db, version, startTime);
+        this.config    = Config.load();
     }
 
     public NodeHttpServer(Database db) {
@@ -100,6 +102,7 @@ public class NodeHttpServer {
         server.createContext("/api/block/",          new BlockHandler());
         server.createContext("/api/events",          new SseHandler());
         server.createContext("/api/nameindex",       new NameIndexStatusHandler());
+        server.createContext("/api/config",          new ConfigHandler());
         server.createContext("/block/",              new RestBlockHandler());
         server.createContext("/header/",             new RestHeaderHandler());
         server.createContext("/tx/",                 new RestTxHandler());
@@ -479,6 +482,77 @@ public class NodeHttpServer {
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
+        }
+    }
+
+    // ── GET /api/config — read config / POST to update ───────────────────────
+
+    private class ConfigHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                // Return full config + module status as JSON
+                StringBuilder sb = new StringBuilder("{");
+                sb.append("\"settings\":").append(config.toJson()).append(",");
+                sb.append("\"modules\":[");
+                boolean first = true;
+                for (Config.Module m : Config.Module.values()) {
+                    if (!first) sb.append(",");
+                    sb.append("{")
+                            .append("\"id\":\"").append(m.name()).append("\",")
+                            .append("\"name\":\"").append(m.displayName).append("\",")
+                            .append("\"desc\":\"").append(m.description).append("\",")
+                            .append("\"icon\":\"").append(m.icon).append("\",")
+                            .append("\"enabled\":").append(config.isEnabled(m))
+                            .append("}");
+                    first = false;
+                }
+                sb.append("]}");
+                byte[] body = sb.toString()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+                exchange.close();
+
+            } else if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                // Update a single config value
+                // Body: {"key":"dns.recursive.port","value":"5350"}
+                String body = new String(exchange.getRequestBody().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                String key   = extractJsonString(body, "key");
+                String value = extractJsonString(body, "value");
+                if (key != null && value != null) {
+                    config.set(key, value);
+                    byte[] resp = "{\"ok\":true}".getBytes();
+                    exchange.getResponseHeaders().set("Content-Type","application/json");
+                    exchange.sendResponseHeaders(200, resp.length);
+                    exchange.getResponseBody().write(resp);
+                } else {
+                    byte[] resp = "{\"ok\":false,\"error\":\"missing key or value\"}"
+                            .getBytes();
+                    exchange.getResponseHeaders().set("Content-Type","application/json");
+                    exchange.sendResponseHeaders(400, resp.length);
+                    exchange.getResponseBody().write(resp);
+                }
+                exchange.close();
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+                exchange.close();
+            }
+        }
+
+        private String extractJsonString(String json, String key) {
+            String search = "\"" + key + "\":\"";
+            int start = json.indexOf(search);
+            if (start < 0) return null;
+            start += search.length();
+            int end = json.indexOf("\"", start);
+            if (end < 0) return null;
+            return json.substring(start, end);
         }
     }
 
