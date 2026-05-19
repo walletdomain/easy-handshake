@@ -142,26 +142,23 @@
   <!-- RIGHT COLUMN — Live Events -->
   <div class="layout-right">
 
-    <div class="section-title">
-      Live Events
-      <span class="sse-dot" id="sse-dot" title="SSE connection status"></span>
-      <span class="sse-label" id="sse-label">connecting...</span>
-    </div>
-
     <div class="events-panel">
-      <!-- Filter bar -->
+      <!-- Filter bar with title -->
       <div class="events-filters">
+          <span class="events-title">
+            Live Events
+            <span class="sse-dot" id="sse-dot" title="SSE connection status"></span>
+            <span class="sse-label" id="sse-label">connecting...</span>
+          </span>
+        <div class="filter-spacer"></div>
         <button class="filter-btn active" data-cat="ALL">All</button>
         <button class="filter-btn" data-cat="BLOCK">⛏ Block</button>
         <button class="filter-btn" data-cat="DNS">🌐 DNS</button>
         <button class="filter-btn" data-cat="PEER">🔗 Peer</button>
         <button class="filter-btn" data-cat="NAME">📛 Name</button>
         <button class="filter-btn" data-cat="SYSTEM">⚙ System</button>
-        <div class="filter-spacer"></div>
-        <button class="filter-btn" id="scroll-toggle" title="Toggle auto-scroll">
-          ↓ Auto-scroll
-        </button>
-        <button class="filter-btn" id="clear-btn" title="Clear log">Clear</button>
+        <button class="filter-btn" id="scroll-toggle" title="Toggle auto-scroll">↓</button>
+        <button class="filter-btn" id="clear-btn" title="Clear log">✕</button>
       </div>
 
       <!-- Event log -->

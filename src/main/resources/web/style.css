@@ -297,7 +297,17 @@ h1 {
   max-height: calc(50vh - 6rem);
 }
 
-/* ── Two-column stats grid (2 columns in left panel) ── */
+.events-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
 
 .layout .grid {
   grid-template-columns: repeat(2, 1fr);
