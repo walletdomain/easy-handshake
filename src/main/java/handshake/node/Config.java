@@ -282,6 +282,9 @@ public class Config implements AutoCloseable {
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    /** Returns the underlying MVStore — used to share with PeerScorecard. */
+    public MVStore getStore() { return store; }
+
     @Override
     public void close() {
         if (!store.isClosed()) {

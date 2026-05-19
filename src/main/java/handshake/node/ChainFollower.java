@@ -188,31 +188,33 @@ public class ChainFollower {
             // Prefer peers at or above our tip — do P2P handshake on each
             // in order of response time until we find one that's current
             for (Peer best : peers) {
-                // Close all other sockets we won't use yet
                 HNSPeer hnsPeer;
+                String ip = best.seed.ipAddress();
                 try {
                     hnsPeer = new HNSPeer(best, best.brontide);
                     hnsPeer.handshake();
                     hnsPeer.sendSendHeaders();
 
                     if (hnsPeer.getPeerHeight() >= localTip) {
-                        // Close remaining unused sockets
+                        PeerScorecard.get().recordSuccess(ip,
+                                hnsPeer.getPeerAgent(), hnsPeer.getPeerHeight());
                         for (Peer p : peers)
                             if (p != best)
                                 try { p.socket.close(); } catch (Exception ignored) {}
                         return hnsPeer;
                     }
 
-                    // This peer is behind us — close and try next
-                    System.out.println("[ChainFollower] Skipping "
-                            + best.seed.ipAddress()
+                    PeerScorecard.get().recordStaleTip(ip,
+                            hnsPeer.getPeerHeight(), localTip);
+                    System.out.println("[ChainFollower] Skipping " + ip
                             + " (height=" + hnsPeer.getPeerHeight()
                             + " < our tip=" + localTip + ")");
                     best.socket.close();
 
                 } catch (Exception e) {
-                    System.out.println("[ChainFollower] Peer "
-                            + best.seed.ipAddress() + " failed: " + e.getMessage());
+                    System.out.println("[ChainFollower] Peer " + ip
+                            + " failed: " + e.getMessage());
+                    PeerScorecard.get().recordFailure(ip, e.getMessage());
                     try { best.socket.close(); } catch (Exception ignored) {}
                 }
             }

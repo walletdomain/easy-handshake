@@ -345,6 +345,86 @@ footer {
   gap: 0.5rem;
 }
 
+/* ── Peers Panel ── */
+
+.peers-title { margin-top: 1rem; }
+
+.peers-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.peer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  font-family: 'Space Mono', monospace;
+  font-size: 0.7rem;
+  transition: background 0.1s;
+}
+.peer-row:last-child  { border-bottom: none; }
+.peer-row:hover       { background: var(--surface2); }
+
+.peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.peer-dot.healthy    { background: var(--accent2); box-shadow: 0 0 4px var(--accent2); }
+.peer-dot.degraded   { background: var(--warn); }
+.peer-dot.backoff    { background: var(--danger); }
+
+.peer-ip {
+  color: var(--text);
+  min-width: 110px;
+  flex-shrink: 0;
+}
+.peer-agent {
+  color: var(--muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.peer-height {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: right;
+}
+.peer-score {
+  flex-shrink: 0;
+  min-width: 42px;
+  text-align: right;
+  font-weight: 600;
+}
+.peer-score.healthy  { color: var(--accent2); }
+.peer-score.degraded { color: var(--warn); }
+.peer-score.backoff  { color: var(--danger); }
+
+.peer-backoff-tag {
+  font-size: 0.6rem;
+  background: var(--danger);
+  color: #fff;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.peers-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 1rem;
+  font-size: 0.75rem;
+  font-family: 'Space Mono', monospace;
+}
+
 /* ── Name Index Progress Bar ── */
 
 .nameindex-progress {

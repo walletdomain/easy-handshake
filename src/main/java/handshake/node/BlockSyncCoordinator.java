@@ -215,6 +215,10 @@ public class BlockSyncCoordinator {
                 hnsPeer.sendSendHeaders();
                 hnsPeer.drainPendingMessages();
 
+                // Record successful P2P connection
+                PeerScorecard.get().recordSuccess(ip,
+                        hnsPeer.getPeerAgent(), hnsPeer.getPeerHeight());
+
                 // Pull chunks from the work queue and download them
                 while (!fatalError.get()) {
                     List<HeightHash> chunk = takeChunk();
@@ -222,6 +226,9 @@ public class BlockSyncCoordinator {
 
                     try {
                         downloadChunk(hnsPeer, chunk);
+                        // Record success per chunk downloaded
+                        PeerScorecard.get().recordSuccess(ip,
+                                hnsPeer.getPeerAgent(), hnsPeer.getPeerHeight());
                     } catch (Exception e) {
                         String msg = e.getMessage() != null ? e.getMessage() : "";
                         boolean isExpectedDrop = msg.contains("Connection closed")
@@ -231,6 +238,7 @@ public class BlockSyncCoordinator {
                         System.out.println("[" + ip + "] Error during chunk: "
                                 + e.getClass().getSimpleName()
                                 + ": " + msg);
+                        PeerScorecard.get().recordFailure(ip, msg);
                         if (!isExpectedDrop && !(e instanceof SecurityException))
                             System.out.println("[" + ip + "] Unexpected error: "
                                     + e.getClass().getName() + "\n"

@@ -88,6 +88,14 @@ public class HNSPeerManager {
         long start = System.currentTimeMillis();
         String ip = seed.ipAddress();
 
+        // Skip backed-off or blacklisted peers
+        if (PeerScorecard.get().shouldSkip(ip)) {
+            PeerScorecard.PeerRecord r = PeerScorecard.get().getRecord(ip);
+            System.out.printf("  [%s] skipped (%s, score=%d)%n",
+                    ip, r.status(), r.score);
+            return null;
+        }
+
         byte[] remoteStaticPub;
         try {
             remoteStaticPub = base32Decode(seed.key());
@@ -121,10 +129,12 @@ public class HNSPeerManager {
             byte[] actTwo = in.readNBytes(BrontideState.ACT_TWO_SIZE);
             if (actTwo.length != BrontideState.ACT_TWO_SIZE) {
                 socket.close();
+                PeerScorecard.get().recordFailure(ip, "incomplete act2");
                 return null;
             }
             if (!state.recvActTwo(actTwo)) {
                 socket.close();
+                PeerScorecard.get().recordFailure(ip, "act2 verify failed");
                 return null;
             }
 
@@ -134,11 +144,12 @@ public class HNSPeerManager {
             out.flush();
 
             long elapsed = System.currentTimeMillis() - start;
-            // brontide OK — suppress success messages to reduce noise
             return new Peer(seed, elapsed, socket, state);
 
         } catch (Exception e) {
             System.out.printf("  [%s] failed: %s%n", ip,
+                    e.getClass().getSimpleName());
+            PeerScorecard.get().recordFailure(ip,
                     e.getClass().getSimpleName());
             try { socket.close(); } catch (Exception ignored) {}
             return null;
@@ -217,6 +228,10 @@ public class HNSPeerManager {
 
             // ── Phase 4: Embedded HTTP dashboard and REST API ─────────────
             Config cfg = Config.load();
+
+            // Initialize peer scorecard using the same MVStore as Config
+            PeerScorecard.get().init(cfg.getStore());
+
             NodeHttpServer httpServer = new NodeHttpServer(db,
                     cfg.httpPort(), "1.0.0");
             httpServer.start();
@@ -463,27 +478,33 @@ public class HNSPeerManager {
         }
         // Try peers in order of response time, skip any below our tip
         for (Peer best : peers) {
-            @SuppressWarnings("DuplicatedCode") // same pattern in ChainFollower — kept separate
+            @SuppressWarnings("DuplicatedCode")
             HNSPeer p;
             try {
                 p = new HNSPeer(best, best.brontide);
                 p.handshake();
                 p.sendSendHeaders();
+                String ip = best.seed.ipAddress();
                 if (p.getPeerHeight() >= localTip) {
+                    PeerScorecard.get().recordSuccess(ip,
+                            p.getPeerAgent(), p.getPeerHeight());
                     // Close remaining unused sockets
                     for (Peer peer : peers)
                         if (peer != best)
                             try { peer.socket.close(); } catch (Exception ignored) {}
                     return p;
                 }
+                PeerScorecard.get().recordStaleTip(ip,
+                        p.getPeerHeight(), localTip);
                 System.out.println("[Header sync] Skipping "
-                        + best.seed.ipAddress()
-                        + " (height=" + p.getPeerHeight()
+                        + ip + " (height=" + p.getPeerHeight()
                         + " < our tip=" + localTip + ")");
                 best.socket.close();
             } catch (Exception e) {
-                System.out.println("[Header sync] Peer "
-                        + best.seed.ipAddress() + " failed: " + e.getMessage());
+                String ip = best.seed.ipAddress();
+                System.out.println("[Header sync] Peer " + ip
+                        + " failed: " + e.getMessage());
+                PeerScorecard.get().recordFailure(ip, e.getMessage());
                 try { best.socket.close(); } catch (Exception ignored) {}
             }
         }

@@ -103,6 +103,7 @@ public class NodeHttpServer {
         server.createContext("/api/events",          new SseHandler());
         server.createContext("/api/nameindex",       new NameIndexStatusHandler());
         server.createContext("/api/config",          new ConfigHandler());
+        server.createContext("/api/peers",           new PeersHandler());
         server.createContext("/block/",              new RestBlockHandler());
         server.createContext("/header/",             new RestHeaderHandler());
         server.createContext("/tx/",                 new RestTxHandler());
@@ -477,6 +478,22 @@ public class NodeHttpServer {
             sb.append("]");
 
             byte[] body = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        }
+    }
+
+    // ── GET /api/peers — peer scores and status ───────────────────────────────
+
+    private class PeersHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            byte[] body = PeerScorecard.get().toJson()
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
             exchange.sendResponseHeaders(200, body.length);

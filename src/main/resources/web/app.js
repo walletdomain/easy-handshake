@@ -211,6 +211,54 @@ function formatUptime(seconds) {
   return `${m}m`;
 }
 
+// ── Peers panel ───────────────────────────────────────────────────────────────
+
+async function refreshPeers() {
+  try {
+    const res  = await fetch('/api/peers');
+    if (!res.ok) return;
+    const peers = await res.json();
+    renderPeers(peers);
+  } catch (err) { /* ignore */ }
+}
+
+function renderPeers(peers) {
+  const panel = document.getElementById('peers-panel');
+  if (!panel) return;
+
+  if (!peers || peers.length === 0) {
+    panel.innerHTML = '<div class="peers-empty">No peers known yet.</div>';
+    return;
+  }
+
+  // Sort: healthy first, then degraded, then backoff
+  peers.sort((a, b) => {
+    const rank = p => p.backoff ? 2 : p.score >= 40 ? 0 : 1;
+    const dr = rank(a) - rank(b);
+    return dr !== 0 ? dr : b.score - a.score;
+  });
+
+  panel.innerHTML = peers.map(p => {
+    const cls    = p.backoff ? 'backoff' : p.score >= 40 ? 'healthy' : 'degraded';
+    const agent  = (p.version || '').replace('/hsd:', 'hsd ').replace(/\//g, '');
+    const height = p.height > 0 ? 'h=' + p.height.toLocaleString() : '—';
+    const backoffTag = p.backoff
+        ? '<span class="peer-backoff-tag">BACKOFF</span>' : '';
+    return `<div class="peer-row">
+      <span class="peer-dot ${cls}"></span>
+      <span class="peer-ip">${escHtml(p.ip)}</span>
+      <span class="peer-agent">${escHtml(agent)}</span>
+      <span class="peer-height">${height}</span>
+      <span class="peer-score ${cls}">${p.score}</span>
+      ${backoffTag}
+    </div>`;
+  }).join('');
+}
+
+// Poll peers every 30 seconds
+setInterval(refreshPeers, 30_000);
+refreshPeers();
+
 // ── Name index progress ───────────────────────────────────────────────────────
 
 let nameIndexReady = false;
