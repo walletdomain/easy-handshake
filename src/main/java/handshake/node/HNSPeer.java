@@ -359,19 +359,37 @@ public class HNSPeer {
      */
     @SuppressWarnings("unused") // used by peer discovery (planned)
     public List<Seed> requestMorePeers(int maxWait) throws Exception {
+        // Drain any pending messages before sending GETADDR
+        peer.socket.setSoTimeout(200);
+        try {
+            while (true) {
+                HNSMessage.Message msg = readMessage();
+                if (msg.type == HNSMessage.TYPE_PING) handlePing(msg.payload);
+            }
+        } catch (java.net.SocketTimeoutException ignored) {
+            // Clean — no more pending messages
+        }
+
+        // Send GETADDR and wait for ADDR response
         send(HNSMessage.TYPE_GETADDR, new byte[0]);
+        peer.socket.setSoTimeout(maxWait);
 
         List<Seed> discovered = new ArrayList<>();
         long deadline = System.currentTimeMillis() + maxWait;
 
-        while (System.currentTimeMillis() < deadline) {
-            HNSMessage.Message msg = readMessage();
-            if (msg.type == HNSMessage.TYPE_ADDR) {
-                discovered.addAll(parseAddrPayload(msg.payload));
-                break; // one ADDR response is enough
+        try {
+            while (System.currentTimeMillis() < deadline) {
+                HNSMessage.Message msg = readMessage();
+                if (msg.type == HNSMessage.TYPE_ADDR) {
+                    discovered.addAll(parseAddrPayload(msg.payload));
+                    break;
+                }
+                if (msg.type == HNSMessage.TYPE_PING) handlePing(msg.payload);
             }
-            if (msg.type == HNSMessage.TYPE_PING) handlePing(msg.payload);
-            // ignore everything else while waiting
+        } catch (java.net.SocketTimeoutException ignored) {
+            // Timed out waiting for ADDR — return what we have
+        } finally {
+            peer.socket.setSoTimeout(30_000);
         }
         return discovered;
     }
@@ -385,13 +403,11 @@ public class HNSPeer {
         List<Seed> seeds = new ArrayList<>();
         if (payload.length < 1) return seeds;
 
-        // Read varint count
         long[] vi = decodeVarint(payload, 0);
         int count = (int) vi[0];
         int pos   = (int) vi[1];
 
-        @SuppressWarnings("MismatchedReadAndWriteOfArray") // intentional read-only zero sentinel
-        byte[] ZERO_KEY = new byte[33]; // all zeros = no brontide key
+        byte[] ZERO_KEY = new byte[33];
 
         for (int i = 0; i < count && pos + 88 <= payload.length; i++) {
             // time(8) + services(4) + hiServices(4) = 16 bytes
@@ -415,7 +431,6 @@ public class HNSPeer {
             byte[] key = Arrays.copyOfRange(payload, pos, pos + 33);
             pos += 33;
 
-            // Skip IPv6 addresses and entries without a brontide key
             if (addrType != 0) continue;
             if (Arrays.equals(key, ZERO_KEY)) continue;
             if (port == 0) continue;

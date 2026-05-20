@@ -15,7 +15,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.Executors;
 
 /**
@@ -106,6 +109,7 @@ public class NodeHttpServer {
         server.createContext("/api/nameindex",       new NameIndexStatusHandler());
         server.createContext("/api/config",          new ConfigHandler());
         server.createContext("/api/peers",           new PeersHandler());
+        server.createContext("/api/seeds",           new SeedsHandler());
         server.createContext("/block/",              new RestBlockHandler());
         server.createContext("/header/",             new RestHeaderHandler());
         server.createContext("/tx/",                 new RestTxHandler());
@@ -491,13 +495,168 @@ public class NodeHttpServer {
         }
     }
 
+    // ── /api/seeds — seed management ─────────────────────────────────────────
+
+    private class SeedsHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            String method = exchange.getRequestMethod().toUpperCase();
+
+            switch (method) {
+                case "GET" -> {
+                    // Return all seeds as JSON
+                    byte[] body = SeedDatabase.get().toJson()
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type","application/json");
+                    exchange.sendResponseHeaders(200, body.length);
+                    exchange.getResponseBody().write(body);
+                    exchange.close();
+                }
+                case "POST" -> {
+                    // Add a custom seed
+                    // Body: {"key":"...","ip":"...","port":44806,"label":"..."}
+                    String body = new String(exchange.getRequestBody().readAllBytes(),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    String key   = extractJsonString(body, "key");
+                    String ip    = extractJsonString(body, "ip");
+                    String portS = extractJsonString(body, "port");
+                    String label = extractJsonString(body, "label");
+                    if (key == null || ip == null) {
+                        sendJson(exchange, 400, "{\"ok\":false,\"error\":\"missing key or ip\"}");
+                        return;
+                    }
+                    int port = 44806;
+                    try { if (portS != null) port = Integer.parseInt(portS); }
+                    catch (Exception ignored) {}
+                    boolean ok = SeedDatabase.get().addSeed(key, ip, port,
+                            label != null ? label : "");
+                    sendJson(exchange, ok ? 200 : 409,
+                            ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"seed already exists\"}");
+                }
+                case "DELETE" -> {
+                    // Remove or disable a seed: /api/seeds?ip=1.2.3.4&action=remove|disable|enable
+                    String query  = exchange.getRequestURI().getQuery();
+                    Map<String,String> params = parseQuery(query);
+                    String ip     = params.get("ip");
+                    String action = params.getOrDefault("action", "disable");
+                    if (ip == null) {
+                        sendJson(exchange, 400, "{\"ok\":false,\"error\":\"missing ip\"}");
+                        return;
+                    }
+                    boolean ok = switch (action) {
+                        case "remove"  -> SeedDatabase.get().removeSeed(ip);
+                        case "enable"  -> SeedDatabase.get().setEnabled(ip, true);
+                        default        -> SeedDatabase.get().setEnabled(ip, false);
+                    };
+                    sendJson(exchange, 200,
+                            ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"not found or builtin\"}");
+                }
+                default -> {
+                    exchange.sendResponseHeaders(405, -1);
+                    exchange.close();
+                }
+            }
+        }
+
+        private void sendJson(com.sun.net.httpserver.HttpExchange ex,
+                              int code, String json) throws IOException {
+            byte[] body = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.getResponseHeaders().set("Content-Type", "application/json");
+            ex.sendResponseHeaders(code, body.length);
+            ex.getResponseBody().write(body);
+            ex.close();
+        }
+
+        private String extractJsonString(String json, String key) {
+            String search = "\"" + key + "\":\"";
+            int start = json.indexOf(search);
+            if (start >= 0) {
+                start += search.length();
+                int end = json.indexOf("\"", start);
+                if (end >= 0) return json.substring(start, end);
+            }
+            // Try without quotes (number values)
+            search = "\"" + key + "\":";
+            start = json.indexOf(search);
+            if (start >= 0) {
+                start += search.length();
+                int end = json.indexOf(",", start);
+                int end2 = json.indexOf("}", start);
+                if (end < 0 || (end2 >= 0 && end2 < end)) end = end2;
+                if (end >= 0) return json.substring(start, end).trim();
+            }
+            return null;
+        }
+
+        private Map<String,String> parseQuery(String query) {
+            Map<String,String> map = new LinkedHashMap<>();
+            if (query == null) return map;
+            for (String pair : query.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length == 2) map.put(kv[0], kv[1]);
+            }
+            return map;
+        }
+    }
+
     // ── GET /api/peers — peer scores and status ───────────────────────────────
 
     private class PeersHandler implements HttpHandler {
         @Override
         public void handle(com.sun.net.httpserver.HttpExchange exchange)
                 throws IOException {
-            byte[] body = PeerScorecard.get().toJson()
+            // Merge scored peers with all known peers (seeds + discovered)
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+
+            // All known peers from seeds + discovery
+            Set<String> shown = new HashSet<>();
+            for (handshake.node.Seed s : PeerDiscovery.get().getAllPeers()) {
+                if (!first) sb.append(",");
+                String ip = s.ipAddress();
+                shown.add(ip);
+                PeerScorecard.PeerRecord r = PeerScorecard.get().getRecord(ip);
+                int    score   = r != null ? r.score   : 50;
+                String status  = r != null ? r.status() : "UNKNOWN";
+                String agent   = r != null && r.lastVersion != null
+                        ? r.lastVersion : "";
+                int    height  = r != null ? r.lastKnownHeight : 0;
+                boolean backoff = r != null && r.isBackedOff();
+                sb.append(String.format(
+                        "{\"ip\":\"%s\",\"score\":%d,\"status\":\"%s\","
+                                + "\"ok\":%d,\"fail\":%d,\"inv\":%d,\"height\":%d,"
+                                + "\"version\":\"%s\",\"backoff\":%b}",
+                        ip, score, status,
+                        r != null ? r.successCount : 0,
+                        r != null ? r.failureCount : 0,
+                        r != null ? r.invalidBlockCount : 0,
+                        height,
+                        agent.replace("\"",""),
+                        backoff));
+                first = false;
+            }
+
+            // Also show any scored peers not in the known list
+            for (PeerScorecard.PeerRecord r : PeerScorecard.get().getAllRecords()) {
+                if (!shown.contains(r.ip)) {
+                    if (!first) sb.append(",");
+                    sb.append(String.format(
+                            "{\"ip\":\"%s\",\"score\":%d,\"status\":\"%s\","
+                                    + "\"ok\":%d,\"fail\":%d,\"inv\":%d,\"height\":%d,"
+                                    + "\"version\":\"%s\",\"backoff\":%b}",
+                            r.ip, r.score, r.status(),
+                            r.successCount, r.failureCount, r.invalidBlockCount,
+                            r.lastKnownHeight,
+                            r.lastVersion != null ? r.lastVersion.replace("\"","") : "",
+                            r.isBackedOff()));
+                    first = false;
+                }
+            }
+
+            sb.append("]");
+            byte[] body = sb.toString()
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");

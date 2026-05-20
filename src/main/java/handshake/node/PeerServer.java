@@ -62,6 +62,7 @@ public class PeerServer {
         pool.submit(this::acceptLoop);
         System.out.println("[PeerServer] Listening for inbound connections on port "
                 + port);
+        EventBus.get().peer("Peer server listening on port " + port);
     }
 
     public void stop() {
@@ -136,16 +137,27 @@ public class PeerServer {
             HNSPeer peer = new HNSPeer(socket, in, out, brontide, remoteIp);
             peer.handshakeAsResponder(db.getTipHeight());
 
+            String agent = peer.getPeerAgent();
             System.out.println("[PeerServer] " + remoteIp
-                    + " P2P handshake complete. agent=" + peer.getPeerAgent());
+                    + " P2P handshake complete. agent=" + agent);
+            EventBus.get().peer("Inbound peer connected: " + remoteIp
+                    + " " + agent + " h=" + peer.getPeerHeight());
+            PeerScorecard.get().recordSuccess(remoteIp, agent,
+                    peer.getPeerHeight());
 
             // ---- Serve requests ----
 
             serveRequests(peer, remoteIp);
 
+            EventBus.get().peer("Peer disconnected: " + remoteIp);
+
         } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             System.out.println("[PeerServer] " + remoteIp
-                    + " disconnected: " + e.getMessage());
+                    + " disconnected: " + msg);
+            // Only publish unexpected disconnections — not normal timeouts
+            if (!msg.contains("timed out") && !msg.contains("Connection reset"))
+                EventBus.get().peer("Peer " + remoteIp + " error: " + msg);
         }
     }
 

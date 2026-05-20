@@ -1,6 +1,7 @@
 package handshake.node;
 
 import handshake.database.Database;
+import handshake.node.Seed;
 import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -163,8 +164,12 @@ public class HNSPeerManager {
     public static List<Peer> discoverPeers() throws InterruptedException {
         List<Future<Peer>> futures = new ArrayList<>();
 
-        try (ExecutorService executor = Executors.newFixedThreadPool(POLL_THREADS)) {
-            for (Seed seed : Seed.SEEDS_BRONTIDE) {
+        // Use seeds + previously discovered peers for a larger pool
+        List<Seed> allPeers = PeerDiscovery.get().getAllPeers();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(allPeers.size(), POLL_THREADS * 2))) {
+            for (Seed seed : allPeers) {
                 futures.add(executor.submit(() -> pollSeed(seed)));
             }
 
@@ -212,6 +217,17 @@ public class HNSPeerManager {
             handshake.node.EventBus.get().init(db);
             handshake.node.EventBus.get().system("Node started. Database: " + DB_PATH_CHAIN);
 
+            // Load config and initialize peer infrastructure before sync
+            Config cfgEarly = Config.load();
+            PeerScorecard.get().init(cfgEarly.getStore());
+            SeedDatabase.get().init(cfgEarly.getStore());
+            PeerDiscovery.get().init(cfgEarly.getStore());
+            handshake.node.EventBus.get().system("Seed database ready — "
+                    + SeedDatabase.get().getActiveSeeds().size()
+                    + " active seeds, "
+                    + PeerDiscovery.get().getDiscoveredCount()
+                    + " discovered peers");
+
             // ── Phase 1: Header sync ──────────────────────────────────────
             syncHeaderPhase(db);
 
@@ -221,6 +237,36 @@ public class HNSPeerManager {
             System.out.println("\nFull sync complete. Database: "
                     + DB_PATH_CHAIN + ".mv.db");
 
+            // ── Phase 2b: Peer discovery ──────────────────────────────────
+            // Query all seeds for their known peers — runs in background
+            // so it doesn't delay startup
+            Thread discoveryThread = new Thread(() -> {
+                try {
+                    List<Peer> peers = discoverPeers();
+                    int total = 0;
+                    for (Peer p : peers) {
+                        try {
+                            HNSPeer hnsPeer = new HNSPeer(p, p.brontide);
+                            hnsPeer.handshake();
+                            hnsPeer.sendSendHeaders();
+                            Thread.sleep(300); // let peer settle before GETADDR
+                            int found = PeerDiscovery.get()
+                                    .discoverFrom(hnsPeer, p.seed.ipAddress());
+                            total += found;
+                            p.socket.close();
+                        } catch (Exception ignored) {}
+                    }
+                    if (total > 0)
+                        System.out.printf("[PeerDiscovery] Initial discovery "
+                                + "complete — %d new peers found.%n", total);
+                } catch (Exception e) {
+                    System.out.println("[PeerDiscovery] Discovery error: "
+                            + e.getMessage());
+                }
+            }, "peer-discovery");
+            discoveryThread.setDaemon(true);
+            discoveryThread.start();
+
             // ── Phase 3: Run as peer node ─────────────────────────────────
             // Accept inbound connections from other Handshake nodes
             PeerServer server = new PeerServer(identity, db);
@@ -228,9 +274,6 @@ public class HNSPeerManager {
 
             // ── Phase 4: Embedded HTTP dashboard and REST API ─────────────
             Config cfg = Config.load();
-
-            // Initialize peer scorecard using the same MVStore as Config
-            PeerScorecard.get().init(cfg.getStore());
 
             NodeHttpServer httpServer = new NodeHttpServer(db,
                     cfg.httpPort(), "1.0.0");

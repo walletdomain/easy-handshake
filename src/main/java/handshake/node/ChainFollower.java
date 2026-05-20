@@ -102,6 +102,9 @@ public class ChainFollower {
             System.out.println("[ChainFollower] " + newBlocks
                     + " new block(s) available (local=" + localTip
                     + " peer=" + peerHeight + "). Syncing...");
+            EventBus.get().peer("Syncing " + newBlocks + " new block(s) from "
+                    + peer.peer.seed.ipAddress()
+                    + " (h=" + peerHeight + ")");
 
             // ── Step 1: Sync new headers ──────────────────────────────────
             List<byte[]> locator = localTip == -1
@@ -198,6 +201,8 @@ public class ChainFollower {
                     if (hnsPeer.getPeerHeight() >= localTip) {
                         PeerScorecard.get().recordSuccess(ip,
                                 hnsPeer.getPeerAgent(), hnsPeer.getPeerHeight());
+                        // Opportunistically discover new peers via GETADDR
+                        PeerDiscovery.get().discoverFrom(hnsPeer, ip);
                         for (Peer p : peers)
                             if (p != best)
                                 try { p.socket.close(); } catch (Exception ignored) {}
