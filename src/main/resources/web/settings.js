@@ -10,8 +10,7 @@ const RESTART_REQUIRED = new Set([
   'http.port', 'http.bind', 'p2p.port',
   'dns.auth.port', 'dns.recursive.port',
   'deployment.type',
-  'module.full_node', 'module.dns',
-  'module.wallet', 'module.miner',
+  'module.full_node', 'module.dns', 'module.miner',
 ]);
 
 // ── Load config ───────────────────────────────────────────────────────────────
@@ -23,7 +22,7 @@ async function loadConfig() {
     originalConfig = data.settings || {};
     renderSettings(data);
   } catch (err) {
-    document.getElementById('settings-grid').innerHTML =
+    document.getElementById('col-left').innerHTML =
         `<div style="color:var(--danger);padding:1rem">
          Failed to load settings: ${err.message}
        </div>`;
@@ -33,18 +32,16 @@ async function loadConfig() {
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function renderSettings(data) {
-  const s = data.settings || {};
-  const modules = data.modules || [];
-  const grid = document.getElementById('settings-grid');
+  const s       = data.settings || {};
+  const modules = data.modules  || [];
 
-  grid.innerHTML = `
-    ${renderDeploymentSection(s)}
-    ${renderModulesSection(modules)}
-    ${renderNetworkSection(s)}
-    ${renderDnsSection(s)}
-    ${renderSeedsSection()}
-    ${renderActionsSection()}
-  `;
+  // Left column: Deployment + Network + DNS
+  document.getElementById('col-left').innerHTML =
+      renderDeploymentSection(s) + renderNetworkSection(s) + renderDnsSection(s);
+
+  // Right column: Modules + Seeds
+  document.getElementById('col-right').innerHTML =
+      renderModulesSection(modules) + renderSeedsSection();
 
   attachHandlers();
   loadSeeds();
@@ -80,7 +77,6 @@ function renderDeploymentSection(s) {
           <div class="settings-control">
             <div class="deploy-options" id="deploy-options">${options}</div>
           </div>
-          <span class="restart-badge">restart</span>
         </div>
         <div class="settings-row">
           <div class="settings-label">
@@ -94,7 +90,6 @@ function renderDeploymentSection(s) {
                    value="${esc(s['http.bind'] || '127.0.0.1')}"
                    onchange="recordChange('http.bind', this.value)">
           </div>
-          <span class="restart-badge">restart</span>
         </div>
       </div>
     </div>`;
@@ -102,14 +97,14 @@ function renderDeploymentSection(s) {
 
 function renderModulesSection(modules) {
   const rows = modules.map(m => {
-    const planned = m.id === 'WALLET' || m.id === 'MINER';
+    const planned = m.id === 'MINER';
     return `
       <div class="settings-row">
         <div class="settings-label">
           <div class="settings-label-text">${m.icon} ${m.name}</div>
-          <div class="settings-label-desc">${m.desc}</div>
+          <div class="settings-label-desc" style="max-width:280px">${m.desc}</div>
         </div>
-        <div class="settings-control">
+        <div class="settings-control" style="margin-left:auto;flex-shrink:0">
           ${planned
         ? `<span class="coming-soon">coming soon</span>`
         : `<label class="toggle">
@@ -121,7 +116,6 @@ function renderModulesSection(modules) {
                  <div class="toggle-thumb"></div>
                </label>`}
         </div>
-        ${planned ? '' : '<span class="restart-badge">restart</span>'}
       </div>`;
   }).join('');
 
@@ -141,12 +135,6 @@ function renderNetworkSection(s) {
       'Port for the web dashboard and REST/RPC APIs')}
         ${portRow('P2P brontide port', 'p2p.port', s['p2p.port'] || '44806',
       'Port for peer-to-peer block sync and gossip')}
-        ${portRow('DNS authoritative port', 'dns.auth.port',
-      s['dns.auth.port'] || '5349',
-      'Handshake root zone authoritative nameserver')}
-        ${portRow('DNS recursive port', 'dns.recursive.port',
-      s['dns.recursive.port'] || '5350',
-      'HNS-first recursive resolver for all DNS queries')}
       </div>
     </div>`;
 }
@@ -163,7 +151,6 @@ function portRow(label, key, value, desc) {
                value="${esc(value)}" min="1024" max="65535"
                onchange="recordChange('${key}', this.value)">
       </div>
-      <span class="restart-badge">restart</span>
     </div>`;
 }
 
@@ -173,13 +160,18 @@ function renderDnsSection(s) {
     <div class="settings-section">
       <div class="settings-section-title">DNS</div>
       <div class="settings-rows">
+        ${portRow('Authoritative port', 'dns.auth.port',
+      s['dns.auth.port'] || '5349',
+      'Handshake root zone authoritative nameserver')}
+        ${portRow('Recursive port', 'dns.recursive.port',
+      s['dns.recursive.port'] || '5350',
+      'HNS-first recursive resolver for all DNS queries')}
         <div class="settings-row">
           <div class="settings-label">
             <div class="settings-label-text">Upstream DNS override</div>
             <div class="settings-label-desc">
-              Fallback DNS for ICANN queries. Leave blank to auto-detect
-              from system. Set to your router IP if outbound UDP port 53
-              is blocked (e.g. when using a VPN).
+              Fallback for ICANN queries. Leave blank to auto-detect.
+              Set to your router IP if outbound port 53 is blocked (VPN users).
             </div>
           </div>
           <div class="settings-control">
@@ -193,23 +185,20 @@ function renderDnsSection(s) {
     </div>`;
 }
 
-function renderActionsSection() {
-  return `
-    <div class="settings-actions">
-      <button class="btn-save" id="btn-save" onclick="saveChanges()"
-              disabled>Save Changes</button>
-      <button class="btn-secondary" onclick="resetForm()">Reset</button>
-      <span class="save-status" id="save-status"></span>
-    </div>`;
-}
-
 // ── Interaction ───────────────────────────────────────────────────────────────
 
 function attachHandlers() {
-  // Watch all inputs for changes
   document.querySelectorAll('.settings-input, .toggle input').forEach(el => {
     el.addEventListener('input', () => updateSaveButton());
   });
+}
+
+async function saveAndShowRestart() {
+  await saveChanges();
+  const status = document.getElementById('save-status');
+  if (status && status.className.includes('ok')) {
+    status.textContent = '✓ Saved — please restart the node to apply changes';
+  }
 }
 
 function selectDeploy(type, clickedLabel) {
@@ -235,15 +224,29 @@ function selectDeploy(type, clickedLabel) {
 }
 
 function recordChange(key, value) {
-  pendingChanges[key] = value;
+  // If the new value matches the original, remove from pending — no change needed
+  if (String(originalConfig[key]) === String(value)) {
+    delete pendingChanges[key];
+  } else {
+    pendingChanges[key] = value;
+  }
   updateSaveButton();
 }
 
 function updateSaveButton() {
-  const btn = document.getElementById('btn-save');
+  const btn     = document.getElementById('btn-save');
+  const banner  = document.getElementById('restart-banner');
   if (!btn) return;
-  const hasChanges = Object.keys(pendingChanges).length > 0;
-  btn.disabled = !hasChanges;
+
+  const hasChanges    = Object.keys(pendingChanges).length > 0;
+  const needsRestart  = Object.keys(pendingChanges).some(k => RESTART_REQUIRED.has(k));
+  const hasImmediate  = Object.keys(pendingChanges).some(k => !RESTART_REQUIRED.has(k));
+
+  // Show restart banner if any restart-required changes pending
+  if (banner) banner.classList.toggle('hidden', !needsRestart);
+
+  // Show regular save button only if there are immediate (non-restart) changes
+  btn.disabled = !hasImmediate;
 }
 
 async function saveChanges() {
@@ -268,13 +271,12 @@ async function saveChanges() {
   }
 
   if (errors === 0) {
-    const needsRestart = Object.keys(pendingChanges)
-        .some(k => RESTART_REQUIRED.has(k));
     pendingChanges = {};
     status.className   = 'save-status ok';
-    status.textContent = needsRestart
-        ? '✓ Saved — restart node to apply changes'
-        : '✓ Saved';
+    status.textContent = '✓ Saved';
+    // Hide restart banner after saving
+    const banner = document.getElementById('restart-banner');
+    if (banner) banner.classList.add('hidden');
     // Reload config to sync displayed values
     await loadConfig();
   } else {

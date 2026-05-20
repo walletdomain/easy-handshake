@@ -64,11 +64,16 @@ public class NodeHttpServer {
     private final String     version;
     private final ApiRouter  api;
     private handshake.node.dns.NameIndex nameIndex; // optional — set after DNS starts
+    private handshake.wallet.WalletManager walletManager; // optional — set if wallet enabled
     private final Config config;
     private HttpServer       server;
 
     public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
         this.nameIndex = nameIndex;
+    }
+
+    public void setWalletManager(handshake.wallet.WalletManager wm) {
+        this.walletManager = wm;
     }
 
     public NodeHttpServer(Database db, int port, String version) {
@@ -103,6 +108,8 @@ public class NodeHttpServer {
         });
 
         // REST API routes
+        server.createContext("/api/wallet",          new WalletHandler());
+        server.createContext("/wallet",              new StaticHandler());
         server.createContext("/api/status",          new StatusHandler());
         server.createContext("/api/block/",          new BlockHandler());
         server.createContext("/api/events",          new SseHandler());
@@ -240,6 +247,9 @@ public class NodeHttpServer {
                 case "/settings",
                      "/settings.html"    -> "/web/settings.html";
                 case "/settings.js"      -> "/web/settings.js";
+                case "/wallet",
+                     "/wallet.html"      -> "/web/wallet.html";
+                case "/wallet.js"        -> "/web/wallet.js";
                 case "/favicon.ico"      -> "/web/favicon.ico";
                 case "/favicon.svg"      -> "/web/favicon.svg";
                 case "/hns-logo.svg"     -> "/web/hns-logo.svg";
@@ -492,6 +502,217 @@ public class NodeHttpServer {
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
+        }
+    }
+
+    // ── /api/wallet — wallet REST API ─────────────────────────────────────────
+    //
+    // GET  /api/wallet              → list all wallets + lock status
+    // GET  /api/wallet/{id}         → wallet details, addresses, balance, names
+    // POST /api/wallet/create       → create new wallet
+    // POST /api/wallet/restore      → restore from mnemonic
+    // POST /api/wallet/{id}/unlock  → unlock wallet
+    // POST /api/wallet/{id}/lock    → lock wallet
+    // GET  /api/wallet/{id}/address → next receive address
+    // GET  /api/wallet/{id}/names   → owned names
+
+    private class WalletHandler implements HttpHandler {
+        @Override
+        public void handle(com.sun.net.httpserver.HttpExchange exchange)
+                throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+
+            if (walletManager == null) {
+                // Lazily initialize wallet manager when first accessed
+                // (covers the case where wallet was enabled after startup)
+                walletManager = handshake.wallet.WalletManager.get();
+            }
+
+            String path   = exchange.getRequestURI().getPath();
+            String method = exchange.getRequestMethod().toUpperCase();
+            String body   = method.equals("POST")
+                    ? new String(exchange.getRequestBody().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                    : "";
+
+            try {
+                // POST /api/wallet/create
+                if (path.endsWith("/create") && method.equals("POST")) {
+                    handleCreate(exchange, body);
+                    // POST /api/wallet/restore
+                } else if (path.endsWith("/restore") && method.equals("POST")) {
+                    handleRestore(exchange, body);
+                    // GET /api/wallet
+                } else if (path.equals("/api/wallet") && method.equals("GET")) {
+                    handleList(exchange);
+                    // POST /api/wallet/{id}/unlock
+                } else if (path.endsWith("/unlock") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/unlock");
+                    handleUnlock(exchange, id, body);
+                    // POST /api/wallet/{id}/lock
+                } else if (path.endsWith("/lock") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/lock");
+                    walletManager.lock(id);
+                    sendJson(exchange, 200, "{\"ok\":true}");
+                    // GET /api/wallet/{id}/address
+                } else if (path.endsWith("/address") && method.equals("GET")) {
+                    String id = extractWalletId(path, "/address");
+                    String addr = walletManager.getNextReceiveAddress(id);
+                    sendJson(exchange, 200,
+                            "{\"address\":\"" + addr + "\"}");
+                    // GET /api/wallet/{id}/names
+                } else if (path.endsWith("/names") && method.equals("GET")) {
+                    String id = extractWalletId(path, "/names");
+                    sendJson(exchange, 200, namesToJson(id));
+                    // GET /api/wallet/{id}
+                } else if (method.equals("GET")) {
+                    String id = path.substring("/api/wallet/".length());
+                    handleDetail(exchange, id);
+                } else {
+                    sendJson(exchange, 404, "{\"error\":\"Not found\"}");
+                }
+            } catch (IllegalStateException e) {
+                // Wallet locked
+                sendJson(exchange, 403,
+                        "{\"error\":\"" + e.getMessage() + "\",\"locked\":true}");
+            } catch (Exception e) {
+                sendJson(exchange, 500,
+                        "{\"error\":\"" + e.getMessage().replace("\"","'") + "\"}");
+            }
+        }
+
+        private void handleList(com.sun.net.httpserver.HttpExchange ex)
+                throws IOException {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (var w : walletManager.getAllWallets()) {
+                if (!first) sb.append(",");
+                sb.append(walletToJson(w));
+                first = false;
+            }
+            sb.append("]");
+            sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleDetail(com.sun.net.httpserver.HttpExchange ex,
+                                  String id) throws IOException {
+            var wallet = walletManager.getAllWallets().stream()
+                    .filter(w -> w.id.equals(id)).findFirst().orElse(null);
+            if (wallet == null) {
+                sendJson(ex, 404, "{\"error\":\"Wallet not found\"}");
+                return;
+            }
+            boolean unlocked = walletManager.isUnlocked(id);
+            long balance     = walletManager.getBalance(id);
+            var addrs        = walletManager.getAddresses(id);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"wallet\":").append(walletToJson(wallet));
+            sb.append(",\"unlocked\":").append(unlocked);
+            sb.append(",\"balance\":").append(balance);
+            sb.append(",\"addresses\":[");
+            boolean first = true;
+            for (var a : addrs) {
+                if (!first) sb.append(",");
+                sb.append(a.toJson());
+                first = false;
+            }
+            sb.append("]}");
+            sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleCreate(com.sun.net.httpserver.HttpExchange ex,
+                                  String body) throws Exception {
+            String name     = extractJsonString(body, "name");
+            String password = extractJsonString(body, "password");
+            String words    = extractJsonString(body, "words");
+            if (name == null || password == null) {
+                sendJson(ex, 400, "{\"error\":\"name and password required\"}");
+                return;
+            }
+            boolean use24 = !"12".equals(words);
+            var result = walletManager.createWallet(
+                    name, password.toCharArray(), use24);
+            sendJson(ex, 200, String.format(
+                    "{\"ok\":true,\"walletId\":\"%s\",\"mnemonic\":\"%s\"}",
+                    result.walletId(), result.mnemonic()));
+        }
+
+        private void handleRestore(com.sun.net.httpserver.HttpExchange ex,
+                                   String body) throws Exception {
+            String name       = extractJsonString(body, "name");
+            String mnemonic   = extractJsonString(body, "mnemonic");
+            String password   = extractJsonString(body, "password");
+            String passphrase = extractJsonString(body, "passphrase");
+            if (name == null || mnemonic == null || password == null) {
+                sendJson(ex, 400,
+                        "{\"error\":\"name, mnemonic and password required\"}");
+                return;
+            }
+            var result = walletManager.restoreWallet(
+                    name, mnemonic, password.toCharArray(),
+                    passphrase != null ? passphrase : "");
+            sendJson(ex, 200, String.format(
+                    "{\"ok\":true,\"walletId\":\"%s\"}",
+                    result.walletId()));
+        }
+
+        private void handleUnlock(com.sun.net.httpserver.HttpExchange ex,
+                                  String id, String body) throws IOException {
+            String password   = extractJsonString(body, "password");
+            String passphrase = extractJsonString(body, "passphrase");
+            if (password == null) {
+                sendJson(ex, 400, "{\"error\":\"password required\"}");
+                return;
+            }
+            boolean ok = walletManager.unlock(id, password.toCharArray(),
+                    passphrase != null ? passphrase : "");
+            sendJson(ex, ok ? 200 : 401,
+                    ok ? "{\"ok\":true}"
+                            : "{\"ok\":false,\"error\":\"Incorrect password\"}");
+        }
+
+        private String walletToJson(handshake.wallet.WalletDB.WalletRecord w) {
+            return String.format(
+                    "{\"id\":\"%s\",\"name\":\"%s\",\"addressCount\":%d,"
+                            + "\"createdAt\":%d,\"unlocked\":%b}",
+                    w.id, w.name.replace("\"","'"), w.addressCount,
+                    w.createdAt, walletManager.isUnlocked(w.id));
+        }
+
+        private String namesToJson(String walletId) {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (var n : walletManager.getNames(walletId)) {
+                if (!first) sb.append(",");
+                sb.append(n.toJson());
+                first = false;
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+
+        private String extractWalletId(String path, String suffix) {
+            String after = path.substring("/api/wallet/".length());
+            return after.substring(0, after.length() - suffix.length());
+        }
+
+        private String extractJsonString(String json, String key) {
+            String search = "\"" + key + "\":\"";
+            int start = json.indexOf(search);
+            if (start < 0) return null;
+            start += search.length();
+            int end = json.indexOf("\"", start);
+            return end < 0 ? null : json.substring(start, end);
+        }
+
+        private void sendJson(com.sun.net.httpserver.HttpExchange ex,
+                              int code, String json) throws IOException {
+            byte[] body = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.getResponseHeaders().set("Content-Type", "application/json");
+            ex.sendResponseHeaders(code, body.length);
+            ex.getResponseBody().write(body);
+            ex.close();
         }
     }
 

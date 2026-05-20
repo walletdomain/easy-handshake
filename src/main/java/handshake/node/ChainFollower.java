@@ -33,7 +33,8 @@ public class ChainFollower {
     private final Database              db;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean         running = new AtomicBoolean(false);
-    private handshake.node.dns.DnsServer dnsServer; // optional — wired after DNS starts
+    private handshake.node.dns.DnsServer      dnsServer;
+    private handshake.wallet.WalletManager    walletManager;
 
     public ChainFollower(Database db) {
         this.db        = db;
@@ -47,6 +48,11 @@ public class ChainFollower {
     /** Wire in the DNS server so new blocks update the name index. */
     public void setDnsServer(handshake.node.dns.DnsServer dns) {
         this.dnsServer = dns;
+    }
+
+    /** Wire in the wallet manager for renewal warnings. */
+    public void setWalletManager(handshake.wallet.WalletManager wm) {
+        this.walletManager = wm;
     }
 
     // -------------------------------------------------------------------------
@@ -95,6 +101,9 @@ public class ChainFollower {
                 // Already current — close connection and wait
                 System.out.println("[ChainFollower] Up to date at height " + localTip + ".");
                 try { peer.peer.socket.close(); } catch (Exception ignored) {}
+                // Check renewal warnings every cycle
+                if (walletManager != null)
+                    walletManager.checkRenewalWarnings(localTip);
                 return;
             }
 

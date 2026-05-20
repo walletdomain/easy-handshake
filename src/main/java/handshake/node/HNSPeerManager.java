@@ -297,6 +297,19 @@ public class HNSPeerManager {
                     handshake.node.dns.RecursiveResolver.setUpstreamDns(upstream);
             }
 
+            // ── Phase 7: Wallet ───────────────────────────────────────────
+            if (cfg.isEnabled(Config.Module.WALLET)) {
+                handshake.wallet.WalletManager walletManager =
+                        handshake.wallet.WalletManager.get();
+                httpServer.setWalletManager(walletManager);
+                // Wire renewal warnings into ChainFollower
+                follower.setWalletManager(walletManager);
+                System.out.println("Wallet:        " + (walletManager.hasWallets()
+                        ? walletManager.getAllWallets().size() + " wallet(s) loaded"
+                        : "no wallets yet — create one at http://localhost:"
+                          + cfg.httpPort() + "/wallet"));
+            }
+
             System.out.println("\nNode is running. Press Ctrl+C to stop.");
             System.out.println("Dashboard:     http://localhost:" + cfg.httpPort());
             System.out.println("Brontide:      port " + cfg.p2pPort());
@@ -312,6 +325,8 @@ public class HNSPeerManager {
                 Thread.currentThread().join();
             } catch (InterruptedException e) {
                 System.out.println("Shutting down...");
+                if (cfg.isEnabled(Config.Module.WALLET))
+                    handshake.wallet.WalletManager.get().shutdown();
                 if (finalDns != null) finalDns.stop();
                 follower.stop();
                 httpServer.stop();

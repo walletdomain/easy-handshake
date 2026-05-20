@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Easy Handshake — Wallet</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .wallet-layout { display:flex; gap:1.5rem; align-items:flex-start; }
+    .wallet-sidebar {
+      flex: 0 0 220px;
+      display:flex; flex-direction:column; gap:0.5rem;
+    }
+    .wallet-main { flex:1; min-width:0; }
+
+    /* Wallet cards in sidebar */
+    .wallet-card {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:8px; padding:0.75rem 1rem; cursor:pointer;
+      transition:border-color 0.15s;
+    }
+    .wallet-card:hover { border-color:var(--accent); }
+    .wallet-card.active { border-color:var(--accent); background:#1c2433; }
+    .wallet-card-name { font-size:0.82rem; font-weight:600; color:var(--text); }
+    .wallet-card-balance {
+      font-size:0.72rem; color:var(--accent2);
+      font-family:'Space Mono',monospace; margin-top:0.2rem;
+    }
+    .wallet-card-status {
+      font-size:0.62rem; margin-top:0.2rem;
+      font-family:'Space Mono',monospace;
+    }
+    .wallet-card-status.locked  { color:var(--muted); }
+    .wallet-card-status.unlocked { color:var(--accent2); }
+
+    .btn-new-wallet {
+      background:transparent; border:1px dashed var(--border);
+      border-radius:8px; padding:0.6rem 1rem; cursor:pointer;
+      color:var(--muted); font-size:0.78rem; width:100%;
+      transition:all 0.15s; text-align:center;
+    }
+    .btn-new-wallet:hover { border-color:var(--accent); color:var(--text); }
+
+    /* Main panel sections */
+    .wallet-panel {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:8px; padding:1.25rem; margin-bottom:1rem;
+    }
+    .wallet-panel-title {
+      font-size:0.72rem; font-weight:600; letter-spacing:0.1em;
+      text-transform:uppercase; color:var(--muted); margin-bottom:1rem;
+    }
+
+    /* Lock/unlock bar */
+    .lock-bar {
+      display:flex; align-items:center; gap:0.75rem;
+      padding:0.75rem 1rem; background:var(--surface2);
+      border:1px solid var(--border); border-radius:8px;
+      margin-bottom:1rem;
+    }
+    .lock-icon { font-size:1.1rem; }
+    .lock-msg  { flex:1; font-size:0.82rem; color:var(--muted); }
+
+    /* Balance display */
+    .balance-display {
+      text-align:center; padding:1.5rem 0 1rem;
+    }
+    .balance-hns {
+      font-size:2.2rem; font-weight:700; color:var(--text);
+      font-family:'Space Mono',monospace;
+    }
+    .balance-label { font-size:0.72rem; color:var(--muted); margin-top:0.3rem; }
+
+    /* Receive address highlight */
+    .receive-addr {
+      background:var(--surface2); border:1px solid var(--accent);
+      border-radius:6px; padding:0.75rem 1rem;
+      font-family:'Space Mono',monospace; font-size:0.78rem;
+      color:var(--accent); word-break:break-all;
+      display:flex; align-items:center; gap:0.75rem;
+    }
+    .receive-addr span { flex:1; }
+    .btn-copy {
+      background:transparent; border:1px solid var(--border);
+      border-radius:4px; color:var(--muted); cursor:pointer;
+      font-size:0.68rem; padding:0.2rem 0.5rem;
+      transition:all 0.15s; white-space:nowrap;
+      font-family:'Space Mono',monospace;
+    }
+    .btn-copy:hover { border-color:var(--accent); color:var(--text); }
+
+    /* Names table */
+    .name-row { display:flex; align-items:center; gap:0.75rem;
+      padding:0.45rem 0.5rem; border-bottom:1px solid var(--border); }
+    .name-row:last-child { border-bottom:none; }
+    .name-tag {
+      font-family:'Space Mono',monospace; font-size:0.82rem;
+      font-weight:600; color:var(--text);
+    }
+    .name-expiry {
+      font-size:0.7rem; color:var(--muted);
+      font-family:'Space Mono',monospace; flex:1;
+    }
+    .name-expiry.warn  { color:var(--warn); }
+    .name-expiry.danger { color:var(--danger); }
+
+    /* Modal overlay */
+    .modal-overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,0.7);
+      display:flex; align-items:center; justify-content:center;
+      z-index:100; padding:1rem;
+    }
+    .modal-overlay.hidden { display:none; }
+    .modal {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:12px; padding:1.75rem; width:100%; max-width:480px;
+      max-height:90vh; overflow-y:auto;
+    }
+    .modal-title {
+      font-size:1rem; font-weight:700; margin-bottom:0.3rem;
+      color:var(--text);
+    }
+    .modal-sub {
+      font-size:0.8rem; color:var(--muted); margin-bottom:1.25rem;
+      line-height:1.5;
+    }
+    .field { margin-bottom:0.9rem; }
+    .field label {
+      display:block; font-size:0.72rem; color:var(--muted);
+      font-family:'Space Mono',monospace; margin-bottom:0.3rem;
+    }
+    .field input, .field textarea {
+      width:100%; background:var(--bg); border:1px solid var(--border);
+      border-radius:4px; color:var(--text); font-family:'Space Mono',monospace;
+      font-size:0.8rem; padding:0.45rem 0.6rem; transition:border-color 0.15s;
+    }
+    .field input:focus, .field textarea:focus {
+      outline:none; border-color:var(--accent);
+    }
+    .field textarea { height:80px; resize:vertical; }
+    .modal-actions { display:flex; gap:0.75rem; margin-top:1.25rem; }
+    .btn-primary {
+      flex:1; background:var(--accent); color:#fff; border:none;
+      border-radius:6px; font-size:0.85rem; font-weight:600;
+      padding:0.65rem; cursor:pointer; transition:background 0.15s;
+    }
+    .btn-primary:hover { background:#79b8ff; }
+    .btn-cancel {
+      background:transparent; border:1px solid var(--border);
+      border-radius:6px; color:var(--muted); font-size:0.82rem;
+      padding:0.65rem 1rem; cursor:pointer; transition:all 0.15s;
+    }
+    .btn-cancel:hover { border-color:var(--accent); color:var(--text); }
+    .modal-error {
+      color:var(--danger); font-size:0.75rem;
+      font-family:'Space Mono',monospace; margin-top:0.5rem;
+    }
+
+    /* Mnemonic display */
+    .mnemonic-grid {
+      display:grid; grid-template-columns:repeat(3,1fr); gap:0.5rem;
+      margin:1rem 0;
+    }
+    .mnemonic-word {
+      background:var(--bg); border:1px solid var(--border);
+      border-radius:4px; padding:0.35rem 0.5rem;
+      font-family:'Space Mono',monospace; font-size:0.75rem;
+      color:var(--text); display:flex; gap:0.4rem; align-items:center;
+    }
+    .mnemonic-num { color:var(--muted); font-size:0.65rem; min-width:1.5rem; }
+    .mnemonic-warn {
+      background:rgba(210,153,34,0.15); border:1px solid var(--warn);
+      border-radius:6px; padding:0.75rem; font-size:0.78rem;
+      color:var(--warn); margin-top:0.5rem; line-height:1.5;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align:center; padding:3rem 1rem; color:var(--muted);
+    }
+    .empty-state-icon { font-size:2.5rem; margin-bottom:0.75rem; }
+    .empty-state-msg { font-size:0.85rem; margin-bottom:1.25rem; line-height:1.5; }
+
+    @media (max-width:700px) {
+      .wallet-layout { flex-direction:column; }
+      .wallet-sidebar { flex:none; width:100%; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="header-left">
+    <img src="/hns-logo.svg" alt="Handshake" class="header-logo">
+    <h1>Easy Handshake</h1>
+    <span class="version">v1.0.0</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:0.75rem">
+    <a href="/settings" style="font-size:0.75rem;color:var(--muted);text-decoration:none;font-family:'Space Mono',monospace">⚙ Settings</a>
+    <a href="/" style="font-size:0.75rem;color:var(--muted);text-decoration:none;font-family:'Space Mono',monospace">← Dashboard</a>
+  </div>
+</header>
+
+<div class="section-title" style="margin-bottom:1rem">💰 Wallet</div>
+
+<div class="wallet-layout">
+
+  <!-- Sidebar: wallet list -->
+  <div class="wallet-sidebar">
+    <div id="wallet-list">
+      <div style="color:var(--muted);font-size:0.75rem;padding:0.5rem">Loading...</div>
+    </div>
+    <button class="btn-new-wallet" onclick="showCreateModal()">+ New Wallet</button>
+    <button class="btn-new-wallet" onclick="showRestoreModal()" style="margin-top:0">↩ Recover Wallet</button>
+  </div>
+
+  <!-- Main panel -->
+  <div class="wallet-main" id="wallet-main">
+    <div class="empty-state">
+      <div class="empty-state-icon">💰</div>
+      <div class="empty-state-msg">
+        No wallet selected.<br>
+        Create a new wallet or restore one from a seed phrase.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Create wallet modal -->
+<div class="modal-overlay hidden" id="create-modal">
+  <div class="modal">
+    <div class="modal-title">Create New Wallet</div>
+    <div class="modal-sub">
+      A new 24-word seed phrase will be generated. Write it down and
+      store it safely — it cannot be recovered if lost.
+    </div>
+    <div class="field">
+      <label>Wallet Name</label>
+      <input type="text" id="create-name" placeholder="My Wallet">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="create-password" placeholder="Choose a password"
+             oninput="updateStrengthBar(this.value)">
+    </div>
+    <!-- Password strength bar -->
+    <div style="margin:-0.4rem 0 0.75rem">
+      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+        <div id="strength-fill" style="height:100%;width:0;transition:all 0.3s;border-radius:2px"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:0.25rem">
+        <span id="strength-label" style="font-size:0.65rem;font-family:'Space Mono',monospace"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Confirm Password</label>
+      <input type="password" id="create-password2" placeholder="Repeat password">
+    </div>
+    <div class="modal-error hidden" id="create-error"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideModals()">Cancel</button>
+      <button class="btn-primary" onclick="createWallet()">Create Wallet</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mnemonic display modal -->
+<div class="modal-overlay hidden" id="mnemonic-modal">
+  <div class="modal">
+    <div class="modal-title">Your Seed Phrase</div>
+    <div class="modal-sub">
+      Write these 24 words down in order and store them somewhere safe.
+      This is the <strong>only</strong> way to recover your wallet.
+    </div>
+    <div class="mnemonic-grid" id="mnemonic-grid"></div>
+    <div style="text-align:center;margin:0.75rem 0">
+      <button id="copy-mnemonic-btn" class="btn-copy"
+              style="font-size:0.78rem;padding:0.4rem 0.9rem"
+              onclick="copyMnemonic()">
+        📋 Copy seed phrase
+      </button>
+    </div>
+    <div class="mnemonic-warn">
+      ⚠ Never share your seed phrase with anyone. Easy Handshake will never ask for it.
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" onclick="hideModals()">I've written it down</button>
+    </div>
+  </div>
+</div>
+
+<!-- Restore wallet modal -->
+<div class="modal-overlay hidden" id="restore-modal">
+  <div class="modal">
+    <div class="modal-title">Recover Wallet</div>
+    <div class="modal-sub">
+      Enter your 24-word seed phrase to recover your wallet and all
+      associated addresses and names.
+    </div>
+    <div class="field">
+      <label>Wallet Name</label>
+      <input type="text" id="restore-name" placeholder="Recovered Wallet">
+    </div>
+    <div class="field">
+      <label>Seed Phrase (24 words)</label>
+      <textarea id="restore-mnemonic" placeholder="word1 word2 word3 ..."></textarea>
+    </div>
+    <div class="field">
+      <label>New Password (to encrypt this wallet on this device)</label>
+      <input type="password" id="restore-password" placeholder="Choose a password">
+    </div>
+    <div class="modal-error hidden" id="restore-error"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideModals()">Cancel</button>
+      <button class="btn-primary" onclick="restoreWallet()">Recover Wallet</button>
+    </div>
+  </div>
+</div>
+
+<!-- Unlock modal -->
+<div class="modal-overlay hidden" id="unlock-modal">
+  <div class="modal">
+    <div class="modal-title">Unlock Wallet</div>
+    <div class="modal-sub" id="unlock-msg">Enter your password to unlock.</div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="unlock-password" placeholder="Password"
+             onkeydown="if(event.key==='Enter') unlockWallet()">
+    </div>
+    <div class="modal-error hidden" id="unlock-error"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideModals()">Cancel</button>
+      <button class="btn-primary" onclick="unlockWallet()">Unlock</button>
+    </div>
+  </div>
+</div>
+
+<script src="/wallet.js"></script>
+</body>
+</html>
