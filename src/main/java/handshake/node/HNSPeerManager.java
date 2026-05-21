@@ -313,10 +313,25 @@ public class HNSPeerManager {
                 handshake.wallet.WalletManager walletManager =
                         handshake.wallet.WalletManager.get();
                 httpServer.setWalletManager(walletManager);
-                // Wire renewal warnings into ChainFollower
                 follower.setWalletManager(walletManager);
-                System.out.println("Wallet:        " + (walletManager.hasWallets()
-                        ? walletManager.getAllWallets().size() + " wallet(s) loaded"
+
+                // Initialize and start wallet scanner
+                handshake.wallet.WalletScanner.get().init(
+                        db,
+                        walletManager.getWalletDB(),
+                        walletManager);
+                httpServer.setWalletScanner(
+                        handshake.wallet.WalletScanner.get());
+                follower.setWalletScanner(
+                        handshake.wallet.WalletScanner.get());
+
+                // Start scan if wallets exist
+                handshake.wallet.WalletScanner.get().startScan();
+
+                System.out.println("Wallet:        "
+                        + (walletManager.hasWallets()
+                        ? walletManager.getAllWallets().size()
+                          + " wallet(s) loaded"
                         : "no wallets yet — create one at http://localhost:"
                           + cfg.httpPort() + "/wallet"));
             }

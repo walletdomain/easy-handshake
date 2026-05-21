@@ -298,6 +298,8 @@ public class WalletManager {
 
     // ── Queries ───────────────────────────────────────────────────────────────
 
+    public WalletDB getWalletDB() { return db; }
+
     public List<WalletDB.WalletRecord> getAllWallets() {
         return db.getAllWallets();
     }
@@ -356,20 +358,19 @@ public class WalletManager {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /** Derives and stores addresses for a wallet using a master key. */
     private void deriveAddresses(String walletId, BIP32.HDKey master,
                                  int account, int fromIndex, int count) {
         for (int change = 0; change <= 1; change++) {
             for (int i = fromIndex; i < fromIndex + count; i++) {
                 BIP32.HDKey key = BIP32.deriveAddress(master, account, change, i);
                 String address  = HNSAddress.fromPublicKey(key.publicKey);
-                String pubHex   = bytesToHex(key.publicKey);
                 String path     = "m/44'/5353'/" + account + "'/" + change + "/" + i;
-
                 WalletDB.AddressRecord rec = new WalletDB.AddressRecord();
                 rec.walletId  = walletId;
                 rec.path      = path;
                 rec.address   = address;
-                rec.publicKey = pubHex;
+                rec.publicKey = bytesToHex(key.publicKey);
                 rec.account   = account;
                 rec.change    = change;
                 rec.index     = i;
@@ -380,11 +381,38 @@ public class WalletManager {
         }
     }
 
+    /** Package-visible: derives more addresses via session key (for WalletScanner). */
+    void deriveMoreAddresses(String walletId, int account,
+                             int change, int fromIndex, int count) {
+        WalletSession session = sessions.get(walletId);
+        if (session == null || session.masterKey == null) return;
+        for (int i = fromIndex; i < fromIndex + count; i++) {
+            BIP32.HDKey key = BIP32.deriveAddress(
+                    session.masterKey, account, change, i);
+            String address  = HNSAddress.fromPublicKey(key.publicKey);
+            String path     = "m/44'/5353'/" + account + "'/" + change + "/" + i;
+            WalletDB.AddressRecord rec = new WalletDB.AddressRecord();
+            rec.walletId  = walletId;
+            rec.path      = path;
+            rec.address   = address;
+            rec.publicKey = bytesToHex(key.publicKey);
+            rec.account   = account;
+            rec.change    = change;
+            rec.index     = i;
+            rec.used      = false;
+            rec.balance   = 0;
+            db.saveAddress(rec);
+        }
+        WalletDB.WalletRecord wallet = db.getWallet(walletId);
+        if (wallet != null) {
+            wallet.addressCount = Math.max(wallet.addressCount, fromIndex + count);
+            db.saveWallet(wallet);
+        }
+    }
+
     private void checkAutoLock() {
         for (Map.Entry<String, WalletSession> e : sessions.entrySet()) {
-            if (e.getValue().isExpired()) {
-                lock(e.getKey());
-            }
+            if (e.getValue().isExpired()) lock(e.getKey());
         }
     }
 

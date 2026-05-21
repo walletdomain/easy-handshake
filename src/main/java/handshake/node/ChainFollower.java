@@ -35,6 +35,7 @@ public class ChainFollower {
     private final AtomicBoolean         running = new AtomicBoolean(false);
     private handshake.node.dns.DnsServer      dnsServer;
     private handshake.wallet.WalletManager    walletManager;
+    private handshake.wallet.WalletScanner    walletScanner;
 
     public ChainFollower(Database db) {
         this.db        = db;
@@ -45,14 +46,16 @@ public class ChainFollower {
         });
     }
 
-    /** Wire in the DNS server so new blocks update the name index. */
     public void setDnsServer(handshake.node.dns.DnsServer dns) {
         this.dnsServer = dns;
     }
 
-    /** Wire in the wallet manager for renewal warnings. */
     public void setWalletManager(handshake.wallet.WalletManager wm) {
         this.walletManager = wm;
+    }
+
+    public void setWalletScanner(handshake.wallet.WalletScanner ws) {
+        this.walletScanner = ws;
     }
 
     // -------------------------------------------------------------------------
@@ -166,6 +169,8 @@ public class ChainFollower {
                         BlockValidator.validate(block, header, h);
                         if (dnsServer != null && dnsServer.isNameIndexReady())
                             dnsServer.applyNewBlock(block);
+                        if (walletScanner != null)
+                            walletScanner.applyNewBlock(block, h);
                         EventBus.get().block("Block " + h + " validated ✓ ("
                                 + block.txs.size() + " txs)");
                     } catch (SecurityException e) {

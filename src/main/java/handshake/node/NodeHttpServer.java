@@ -63,10 +63,11 @@ public class NodeHttpServer {
     private final Instant    startTime;
     private final String     version;
     private final ApiRouter  api;
-    private handshake.node.dns.NameIndex nameIndex; // optional — set after DNS starts
-    private handshake.wallet.WalletManager walletManager; // optional — set if wallet enabled
+    private handshake.node.dns.NameIndex nameIndex;
+    private handshake.wallet.WalletManager walletManager;
+    private handshake.wallet.WalletScanner walletScanner;
     private final Config config;
-    private HttpServer       server;
+    private HttpServer server;
 
     public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
         this.nameIndex = nameIndex;
@@ -74,6 +75,10 @@ public class NodeHttpServer {
 
     public void setWalletManager(handshake.wallet.WalletManager wm) {
         this.walletManager = wm;
+    }
+
+    public void setWalletScanner(handshake.wallet.WalletScanner ws) {
+        this.walletScanner = ws;
     }
 
     public NodeHttpServer(Database db, int port, String version) {
@@ -524,8 +529,12 @@ public class NodeHttpServer {
 
             if (walletManager == null) {
                 // Lazily initialize wallet manager when first accessed
-                // (covers the case where wallet was enabled after startup)
                 walletManager = handshake.wallet.WalletManager.get();
+            }
+            if (walletScanner == null) {
+                // Lazily initialize wallet scanner
+                walletScanner = handshake.wallet.WalletScanner.get();
+                walletScanner.init(db, walletManager.getWalletDB(), walletManager);
             }
 
             String path   = exchange.getRequestURI().getPath();
@@ -536,8 +545,18 @@ public class NodeHttpServer {
                     : "";
 
             try {
-                // POST /api/wallet/create
-                if (path.endsWith("/create") && method.equals("POST")) {
+                // POST /api/wallet/scan — start/resume scan
+                if (path.endsWith("/scan") && method.equals("POST")) {
+                    if (walletScanner != null) {
+                        walletScanner.startScan();
+                        sendJson(exchange, 200,
+                                "{\"ok\":true,\"scanning\":"
+                                        + walletScanner.isScanning() + "}");
+                    } else {
+                        sendJson(exchange, 200, "{\"ok\":false}");
+                    }
+                    // POST /api/wallet/create
+                } else if (path.endsWith("/create") && method.equals("POST")) {
                     handleCreate(exchange, body);
                     // POST /api/wallet/restore
                 } else if (path.endsWith("/restore") && method.equals("POST")) {
@@ -583,7 +602,7 @@ public class NodeHttpServer {
 
         private void handleList(com.sun.net.httpserver.HttpExchange ex)
                 throws IOException {
-            StringBuilder sb = new StringBuilder("[");
+            StringBuilder sb = new StringBuilder("{\"wallets\":[");
             boolean first = true;
             for (var w : walletManager.getAllWallets()) {
                 if (!first) sb.append(",");
@@ -591,6 +610,18 @@ public class NodeHttpServer {
                 first = false;
             }
             sb.append("]");
+            // Include scan status
+            if (walletScanner != null) {
+                sb.append(",\"scan\":{");
+                sb.append("\"scanning\":").append(walletScanner.isScanning());
+                sb.append(",\"pct\":").append(walletScanner.getScanPct());
+                sb.append(",\"progress\":").append(walletScanner.getScanProgress());
+                sb.append(",\"total\":").append(walletScanner.getScanTotal());
+                long eta = walletScanner.getEtaSeconds();
+                sb.append(",\"eta\":").append(eta);
+                sb.append("}");
+            }
+            sb.append("}");
             sendJson(ex, 200, sb.toString());
         }
 
