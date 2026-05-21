@@ -307,17 +307,19 @@ function showCreateModal() {
   setTimeout(() => document.getElementById('create-name').focus(), 100);
 }
 
-function updateStrengthBar(password) {
-  const bar   = document.getElementById('strength-fill');
-  const label = document.getElementById('strength-label');
+function updateStrengthBar(password, fillId, labelId) {
+  fillId  = fillId  || 'strength-fill';
+  labelId = labelId || 'strength-label';
+  const bar   = document.getElementById(fillId);
+  const label = document.getElementById(labelId);
   if (!bar) return;
 
   let score = 0;
-  if (password.length >= 8)  score++;
-  if (password.length >= 12) score++;
-  if (/[A-Z]/.test(password)) score++;
-  if (/[0-9]/.test(password)) score++;
-  if (/[^A-Za-z0-9]/.test(password)) score++;
+  if (password.length >= 8)            score++;
+  if (password.length >= 12)           score++;
+  if (/[A-Z]/.test(password))          score++;
+  if (/[0-9]/.test(password))          score++;
+  if (/[^A-Za-z0-9]/.test(password))  score++;
 
   const levels = [
     { pct: 0,   color: 'transparent', text: '' },
@@ -330,8 +332,7 @@ function updateStrengthBar(password) {
   const level = levels[score];
   bar.style.width      = level.pct + '%';
   bar.style.background = level.color;
-  label.textContent    = level.text;
-  label.style.color    = level.color;
+  if (label) { label.textContent = level.text; label.style.color = level.color; }
 }
 
 async function createWallet() {
@@ -401,20 +402,35 @@ function showRestoreModal() {
   document.getElementById('restore-name').value = '';
   document.getElementById('restore-mnemonic').value = '';
   document.getElementById('restore-password').value = '';
+  document.getElementById('restore-password2').value = '';
   document.getElementById('restore-error').classList.add('hidden');
+  updateStrengthBar('', 'restore-strength-fill', 'restore-strength-label');
   document.getElementById('restore-modal').classList.remove('hidden');
   setTimeout(() => document.getElementById('restore-name').focus(), 100);
 }
 
 async function restoreWallet() {
   const name     = document.getElementById('restore-name').value.trim();
-  const mnemonic = document.getElementById('restore-mnemonic').value.trim();
   const password = document.getElementById('restore-password').value;
+  const password2= document.getElementById('restore-password2').value;
   const errEl    = document.getElementById('restore-error');
 
-  if (!name)     { showErr(errEl, 'Please enter a wallet name'); return; }
-  if (!mnemonic) { showErr(errEl, 'Please enter your seed phrase'); return; }
-  if (!password) { showErr(errEl, 'Please enter a password'); return; }
+  // Clean the mnemonic — normalize whitespace, remove punctuation,
+  // handle newlines and extra spaces from copy/paste
+  const rawMnemonic = document.getElementById('restore-mnemonic').value;
+  const mnemonic    = rawMnemonic
+      .toLowerCase()
+      .replace(/[^a-z\s]/g, '')   // remove any non-letter chars (punctuation, numbers)
+      .replace(/\s+/g, ' ')       // collapse all whitespace to single spaces
+      .trim();
+
+  const wordCount = mnemonic ? mnemonic.split(' ').length : 0;
+
+  if (!name)           { showErr(errEl, 'Please enter a wallet name'); return; }
+  if (!mnemonic)       { showErr(errEl, 'Please enter your seed phrase'); return; }
+  if (wordCount !== 24) { showErr(errEl, `Seed phrase must be 24 words (you entered ${wordCount})`); return; }
+  if (!password)       { showErr(errEl, 'Please enter a password'); return; }
+  if (password !== password2) { showErr(errEl, 'Passwords do not match'); return; }
 
   try {
     const res  = await fetch('/api/wallet/restore', {
@@ -425,9 +441,8 @@ async function restoreWallet() {
     const data = await res.json();
     if (data.ok) {
       hideModals();
-      // Load wallets but don't auto-select first — we want the restored one
-      const res2   = await fetch('/api/wallet');
-      wallets      = await res2.json();
+      const res2     = await fetch('/api/wallet');
+      wallets        = await res2.json();
       activeWalletId = data.walletId;
       renderSidebar();
       selectWallet(data.walletId);

@@ -226,20 +226,9 @@ public class BIP32 {
         try {
             byte[] sha = java.security.MessageDigest
                     .getInstance("SHA-256").digest(data);
-            return java.security.MessageDigest
-                    .getInstance("RIPEMD160").digest(sha);
+            return RIPEMD160.hash(sha);
         } catch (Exception e) {
-            // RIPEMD160 not available — fall back to double SHA256 truncated
-            // This is only used for fingerprints so truncation is fine
-            try {
-                byte[] sha1 = java.security.MessageDigest
-                        .getInstance("SHA-256").digest(data);
-                byte[] sha2 = java.security.MessageDigest
-                        .getInstance("SHA-256").digest(sha1);
-                return Arrays.copyOf(sha2, 20);
-            } catch (Exception ex) {
-                throw new RuntimeException(ex);
-            }
+            throw new RuntimeException(e);
         }
     }
 }

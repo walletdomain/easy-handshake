@@ -199,35 +199,23 @@ public class HNSAddress {
 
     /**
      * Computes hash160 (SHA-256 then RIPEMD-160) of the input.
-     * Falls back to SHA-256 truncated to 20 bytes if RIPEMD-160 unavailable.
+     * Uses our pure Java RIPEMD-160 implementation — no JVM provider needed.
      */
     public static byte[] hash160(byte[] data) {
         try {
             byte[] sha = MessageDigest.getInstance("SHA-256").digest(data);
-            try {
-                return MessageDigest.getInstance("RIPEMD160").digest(sha);
-            } catch (Exception ripemdMissing) {
-                // RIPEMD-160 not available in this JVM — use SHA-256 truncated
-                // Note: this produces different addresses than standard HNS!
-                // For production, ensure RIPEMD-160 is available.
-                byte[] sha2 = MessageDigest.getInstance("SHA-256").digest(sha);
-                return Arrays.copyOf(sha2, 20);
-            }
+            return RIPEMD160.hash(sha);
         } catch (Exception e) {
             throw new RuntimeException("hash160 failed", e);
         }
     }
 
     /**
-     * Returns true if this JVM supports RIPEMD-160 for standard address generation.
+     * Always returns true — we use a pure Java RIPEMD-160 implementation
+     * that doesn't depend on JVM security providers.
      */
     public static boolean hasRipemd160() {
-        try {
-            MessageDigest.getInstance("RIPEMD160");
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
+        return true;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

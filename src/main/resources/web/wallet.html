@@ -308,7 +308,21 @@
     </div>
     <div class="field">
       <label>New Password (to encrypt this wallet on this device)</label>
-      <input type="password" id="restore-password" placeholder="Choose a password">
+      <input type="password" id="restore-password" placeholder="Choose a password"
+             oninput="updateStrengthBar(this.value, 'restore-strength-fill', 'restore-strength-label')">
+    </div>
+    <!-- Password strength bar -->
+    <div style="margin:-0.4rem 0 0.75rem">
+      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+        <div id="restore-strength-fill" style="height:100%;width:0;transition:all 0.3s;border-radius:2px"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:0.25rem">
+        <span id="restore-strength-label" style="font-size:0.65rem;font-family:'Space Mono',monospace"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Confirm Password</label>
+      <input type="password" id="restore-password2" placeholder="Repeat password">
     </div>
     <div class="modal-error hidden" id="restore-error"></div>
     <div class="modal-actions">

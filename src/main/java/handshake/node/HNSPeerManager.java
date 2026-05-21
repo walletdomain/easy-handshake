@@ -43,7 +43,7 @@ public class HNSPeerManager {
     private static final String DB_DIR = new java.io.File(".").getAbsolutePath()
             .replaceAll("\\.$", "").replaceAll("[/\\\\]$", "");
 
-    private static final String DB_PATH_CHAIN  = DB_DIR + File.separator + "chain";
+    private static final String DB_PATH_CHAIN  = DB_DIR + File.separator + "chain.mv.db";
     @SuppressWarnings("unused") private static final String DB_PATH_NODE   = DB_DIR + File.separator + "node";
     @SuppressWarnings("unused") private static final String DB_PATH_WALLET = DB_DIR + File.separator + "wallet";
 
@@ -208,6 +208,18 @@ public class HNSPeerManager {
     public static void main(String[] args) throws Exception {
         System.out.println("Opening database at " + DB_PATH_CHAIN + " ...");
 
+        // Migrate legacy "chain" filename to "chain.mv.db" if needed
+        java.io.File legacyFile = new java.io.File(DB_DIR + File.separator + "chain");
+        java.io.File newFile    = new java.io.File(DB_PATH_CHAIN);
+        if (legacyFile.exists() && !newFile.exists()) {
+            if (legacyFile.renameTo(newFile)) {
+                System.out.println("[Migration] Renamed 'chain' → 'chain.mv.db'");
+            } else {
+                System.out.println("[Migration] WARNING: Could not rename 'chain' to "
+                        + "'chain.mv.db' — please rename manually.");
+            }
+        }
+
         // Load or generate our permanent node identity
         NodeIdentity identity = new NodeIdentity(DB_DIR);
 
@@ -234,8 +246,7 @@ public class HNSPeerManager {
             // ── Phase 2: Block sync ───────────────────────────────────────
             syncBlockPhase(db);
 
-            System.out.println("\nFull sync complete. Database: "
-                    + DB_PATH_CHAIN + ".mv.db");
+            System.out.println("\nFull sync complete. Database: " + DB_PATH_CHAIN);
 
             // ── Phase 2b: Peer discovery ──────────────────────────────────
             // Query all seeds for their known peers — runs in background

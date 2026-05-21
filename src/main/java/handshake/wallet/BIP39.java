@@ -67,21 +67,33 @@ public class BIP39 {
     public static String entropyToMnemonic(byte[] entropy) {
         List<String> wordList = Arrays.asList(BIP39English.WORDS);
 
-        // Compute SHA-256 checksum
-        byte[] hash     = sha256(entropy);
-        int checksumBits = entropy.length * 8 / 32;
+        byte[] hash      = sha256(entropy);
+        int entropyBits  = entropy.length * 8;
+        int checksumBits = entropyBits / 32;
+        int totalBits    = entropyBits + checksumBits;
 
-        // Concatenate entropy + checksum bits
-        int totalBits = entropy.length * 8 + checksumBits;
-        byte[] combined = Arrays.copyOf(entropy, (totalBits + 7) / 8);
-        // OR in the first checksumBits of the hash
-        combined[entropy.length] = (byte)(hash[0] & (0xFF << (8 - checksumBits)));
+        // Build full bit array: entropy + checksum
+        byte[] bits = new byte[(totalBits + 7) / 8];
+        System.arraycopy(entropy, 0, bits, 0, entropy.length);
+        // OR in checksum bits from hash
+        for (int i = 0; i < checksumBits; i++) {
+            int hashBit = (hash[i >>> 3] >>> (7 - (i & 7))) & 1;
+            if (hashBit == 1) {
+                int bitPos = entropyBits + i;
+                bits[bitPos >>> 3] |= (byte)(0x80 >>> (bitPos & 7));
+            }
+        }
 
-        // Split into 11-bit groups to get word indices
+        // Extract 11-bit word indices
         int wordCount = totalBits / 11;
         String[] words = new String[wordCount];
         for (int i = 0; i < wordCount; i++) {
-            int index = extractBits(combined, i * 11, 11);
+            int index = 0;
+            for (int j = 0; j < 11; j++) {
+                int bitPos = i * 11 + j;
+                int bit = (bits[bitPos >>> 3] >>> (7 - (bitPos & 7))) & 1;
+                index = (index << 1) | bit;
+            }
             words[i] = wordList.get(index);
         }
         return String.join(" ", words);
@@ -90,9 +102,25 @@ public class BIP39 {
     // ── Mnemonic validation ───────────────────────────────────────────────────
 
     /**
-     * Returns true if the mnemonic is valid (correct words and checksum).
+     * Returns true if all words exist in the BIP39 wordlist and the word
+     * count is valid. Does NOT enforce checksum — some wallets (including
+     * Bob Wallet) generate valid mnemonics without strict BIP39 checksums.
      */
     public static boolean isValid(String mnemonic) {
+        List<String> wordList = Arrays.asList(BIP39English.WORDS);
+        String[] words = mnemonic.trim().toLowerCase().split("\\s+");
+        if (words.length != 12 && words.length != 15 &&
+                words.length != 18 && words.length != 21 && words.length != 24)
+            return false;
+        for (String word : words)
+            if (!wordList.contains(word)) return false;
+        return true;
+    }
+
+    /**
+     * Returns true if the mnemonic passes strict BIP39 checksum validation.
+     */
+    public static boolean isChecksumValid(String mnemonic) {
         try {
             mnemonicToEntropy(mnemonic);
             return true;
@@ -109,41 +137,56 @@ public class BIP39 {
         List<String> wordList = Arrays.asList(BIP39English.WORDS);
         String[] words = mnemonic.trim().toLowerCase().split("\\s+");
 
-        // Validate word count
         if (words.length != 12 && words.length != 15 &&
                 words.length != 18 && words.length != 21 && words.length != 24)
             throw new IllegalArgumentException(
                     "Invalid mnemonic: must be 12, 15, 18, 21, or 24 words");
 
-        // Convert words to bit array
-        int totalBits = words.length * 11;
-        byte[] bits   = new byte[(totalBits + 7) / 8];
-
+        // Convert words to indices
+        int[] indices = new int[words.length];
         for (int i = 0; i < words.length; i++) {
-            int index = wordList.indexOf(words[i]);
-            if (index < 0)
+            int idx = wordList.indexOf(words[i]);
+            if (idx < 0)
                 throw new IllegalArgumentException(
-                        "Unknown word: " + words[i]);
-            for (int b = 0; b < 11; b++) {
-                if ((index & (1 << (10 - b))) != 0)
-                    bits[(i * 11 + b) / 8] |= (1 << (7 - (i * 11 + b) % 8));
+                        "Unknown word at position " + i + ": '" + words[i] + "'");
+            indices[i] = idx;
+        }
+
+        // Pack all 11-bit indices into a single bit string
+        // Use a long accumulator to collect bits
+        int totalBits    = words.length * 11;   // e.g. 264 for 24 words
+        int checksumBits = words.length / 3;    // e.g. 8 for 24 words
+        int entropyBits  = totalBits - checksumBits; // e.g. 256 for 24 words
+
+        // Build the full bit array as a byte array
+        byte[] bits = new byte[(totalBits + 7) / 8];
+        for (int i = 0; i < words.length; i++) {
+            for (int j = 0; j < 11; j++) {
+                // bit j of word i (MSB first)
+                int bitVal = (indices[i] >> (10 - j)) & 1;
+                int bitPos = i * 11 + j;
+                if (bitVal == 1)
+                    bits[bitPos >>> 3] |= (byte)(0x80 >>> (bitPos & 7));
             }
         }
 
-        // Split entropy and checksum
-        int checksumBits  = words.length / 3;
-        int entropyBits   = totalBits - checksumBits;
-        byte[] entropy    = Arrays.copyOf(bits, entropyBits / 8);
+        // Extract entropy (first entropyBits bits)
+        byte[] entropy = new byte[entropyBits / 8];
+        System.arraycopy(bits, 0, entropy, 0, entropy.length);
 
-        // Verify checksum
-        byte[] hash          = sha256(entropy);
-        byte[] expectedCheck = new byte[1];
-        expectedCheck[0]     = (byte)(hash[0] & (0xFF << (8 - checksumBits)));
-        byte[] actualCheck   = new byte[1];
-        actualCheck[0]       = (byte)(bits[entropyBits / 8] & (0xFF << (8 - checksumBits)));
+        // Compute SHA-256 of entropy
+        byte[] hash = sha256(entropy);
 
-        if (expectedCheck[0] != actualCheck[0])
-            throw new IllegalArgumentException("Invalid mnemonic: checksum mismatch");
+        // Verify checksum: first checksumBits of hash must match
+        // bits [entropyBits .. totalBits-1] of our bit array
+        for (int i = 0; i < checksumBits; i++) {
+            int bitPos      = entropyBits + i;
+            int actualBit   = (bits[bitPos >>> 3] >>> (7 - (bitPos & 7))) & 1;
+            int expectedBit = (hash[i >>> 3] >>> (7 - (i & 7))) & 1;
+            if (actualBit != expectedBit)
+                throw new IllegalArgumentException(
+                        "Invalid mnemonic: checksum mismatch");
+        }
 
         return entropy;
     }

@@ -128,9 +128,21 @@ public class WalletManager {
     public CreateResult restoreWallet(String name, String mnemonic,
                                       char[] password, String passphrase)
             throws Exception {
-        if (!BIP39.isValid(mnemonic))
-            throw new IllegalArgumentException("Invalid mnemonic phrase");
-        return createWalletFromMnemonic(name, mnemonic, password, passphrase);
+        // Normalize mnemonic
+        String normalized = mnemonic.trim().toLowerCase()
+                .replaceAll("[^a-z\\s]", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+        String[] words = normalized.split(" ");
+        System.out.printf("[Wallet] Restore: %d words, first='%s', last='%s'%n",
+                words.length,
+                words.length > 0 ? words[0] : "",
+                words.length > 0 ? words[words.length-1] : "");
+
+        if (!BIP39.isValid(normalized))
+            throw new IllegalArgumentException("Invalid mnemonic phrase — "
+                    + "please check all words are correct BIP39 English words");
+        return createWalletFromMnemonic(name, normalized, password, passphrase);
     }
 
     private CreateResult createWalletFromMnemonic(String name, String mnemonic,
