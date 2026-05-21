@@ -202,16 +202,20 @@ public class BIP39 {
      */
     public static byte[] mnemonicToSeed(String mnemonic, String passphrase) {
         try {
-            // Normalize: NFKD unicode normalization (simplified — ASCII mnemonics
-            // from our wordlist don't need normalization)
             byte[] mnemonicBytes = mnemonic.trim()
                     .getBytes(StandardCharsets.UTF_8);
             byte[] saltBytes     = ("mnemonic" + passphrase)
                     .getBytes(StandardCharsets.UTF_8);
 
-            // PBKDF2-HMAC-SHA512
-            return pbkdf2HmacSha512(mnemonicBytes, saltBytes,
-                    PBKDF2_ITERATIONS, SEED_LENGTH_BYTES);
+            // Use Java standard PBKDF2WithHmacSHA512
+            javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(
+                    new String(mnemonicBytes, StandardCharsets.UTF_8).toCharArray(),
+                    saltBytes,
+                    PBKDF2_ITERATIONS,
+                    SEED_LENGTH_BYTES * 8);
+            javax.crypto.SecretKeyFactory factory =
+                    javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512");
+            return factory.generateSecret(spec).getEncoded();
         } catch (Exception e) {
             throw new RuntimeException("BIP39 seed derivation failed", e);
         }

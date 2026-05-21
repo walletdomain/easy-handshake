@@ -7,16 +7,13 @@ import java.util.Arrays;
  * Handshake address encoding and decoding.
  *
  * Handshake uses bech32 addresses with the "hs" human-readable part (HRP).
- * Address format: hs1q{20-byte-hash160-of-pubkey in 5-bit groups}
+ * Address format: hs1q{20-byte-blake2b-of-pubkey in 5-bit groups}
  *
  * Address derivation from a compressed public key:
- *   1. SHA-256(pubkey)        → 32 bytes
- *   2. RIPEMD-160(^)          → 20 bytes  (hash160)
- *   3. bech32 encode          → "hs1q..."
+ *   1. BLAKE2b(pubkey, outputLength=20) → 20 bytes
+ *   2. bech32 encode                    → "hs1q..."
  *
- * Since RIPEMD-160 may not be available in all JVMs, we use the same
- * double-SHA256 + truncation fallback as BIP32.hash160() for address
- * generation in tests. For production, RIPEMD-160 is standard.
+ * NOTE: Handshake uses BLAKE2b, NOT Bitcoin's SHA-256+RIPEMD-160.
  */
 public class HNSAddress {
 
@@ -38,18 +35,40 @@ public class HNSAddress {
 
     /**
      * Derives a mainnet Handshake address from a compressed public key.
+     * HNS uses BLAKE2b-160 (blake2b with 20-byte output), NOT SHA-256+RIPEMD-160.
      */
     public static String fromPublicKey(byte[] compressedPubKey) {
         return fromPublicKey(compressedPubKey, false);
     }
 
-    /**
-     * Derives a Handshake address from a compressed public key.
-     * @param testnet  true for testnet (ts1...), false for mainnet (hs1...)
-     */
     public static String fromPublicKey(byte[] compressedPubKey, boolean testnet) {
-        byte[] hash = hash160(compressedPubKey);
+        byte[] hash = blake2b160(compressedPubKey);
         return encode(testnet ? HRP_TESTNET : HRP_MAINNET, 0, hash);
+    }
+
+    /**
+     * Computes BLAKE2b with 20-byte (160-bit) output.
+     * This is how Handshake derives addresses from public keys.
+     */
+    public static byte[] blake2b160(byte[] data) {
+        return BLAKE2b.hash(data, 20);
+    }
+
+    /**
+     * Always returns true — we use BLAKE2b which is always available.
+     */
+    public static boolean hasRipemd160() {
+        return true;
+    }
+
+    // Keep hash160 for BIP32 fingerprints (which still use SHA256+RIPEMD160)
+    public static byte[] hash160(byte[] data) {
+        try {
+            byte[] sha = MessageDigest.getInstance("SHA-256").digest(data);
+            return RIPEMD160.hash(sha);
+        } catch (Exception e) {
+            throw new RuntimeException("hash160 failed", e);
+        }
     }
 
     /**
@@ -193,29 +212,6 @@ public class HNSAddress {
             return null;
         }
         return Arrays.copyOf(ret, pos);
-    }
-
-    // ── Hash utilities ────────────────────────────────────────────────────────
-
-    /**
-     * Computes hash160 (SHA-256 then RIPEMD-160) of the input.
-     * Uses our pure Java RIPEMD-160 implementation — no JVM provider needed.
-     */
-    public static byte[] hash160(byte[] data) {
-        try {
-            byte[] sha = MessageDigest.getInstance("SHA-256").digest(data);
-            return RIPEMD160.hash(sha);
-        } catch (Exception e) {
-            throw new RuntimeException("hash160 failed", e);
-        }
-    }
-
-    /**
-     * Always returns true — we use a pure Java RIPEMD-160 implementation
-     * that doesn't depend on JVM security providers.
-     */
-    public static boolean hasRipemd160() {
-        return true;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

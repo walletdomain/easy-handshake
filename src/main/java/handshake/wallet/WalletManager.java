@@ -128,17 +128,10 @@ public class WalletManager {
     public CreateResult restoreWallet(String name, String mnemonic,
                                       char[] password, String passphrase)
             throws Exception {
-        // Normalize mnemonic
         String normalized = mnemonic.trim().toLowerCase()
                 .replaceAll("[^a-z\\s]", "")
                 .replaceAll("\\s+", " ")
                 .trim();
-        String[] words = normalized.split(" ");
-        System.out.printf("[Wallet] Restore: %d words, first='%s', last='%s'%n",
-                words.length,
-                words.length > 0 ? words[0] : "",
-                words.length > 0 ? words[words.length-1] : "");
-
         if (!BIP39.isValid(normalized))
             throw new IllegalArgumentException("Invalid mnemonic phrase — "
                     + "please check all words are correct BIP39 English words");
@@ -155,18 +148,18 @@ public class WalletManager {
 
         // Create wallet record
         WalletDB.WalletRecord wallet = new WalletDB.WalletRecord();
-        wallet.id           = generateWalletId();
-        wallet.name         = name;
-        wallet.encryptedSeed = encrypted.toStorageString();
-        wallet.addressCount  = 0;
-        wallet.changeCount   = 0;
-        wallet.createdAt     = System.currentTimeMillis();
-        wallet.lastUnlocked  = 0;
+        wallet.id             = generateWalletId();
+        wallet.name           = name;
+        wallet.encryptedSeed  = encrypted.toStorageString();
+        wallet.addressCount   = 0;
+        wallet.changeCount    = 0;
+        wallet.createdAt      = System.currentTimeMillis();
+        wallet.lastUnlocked   = 0;
         wallet.hasBip39Passphrase = !passphrase.isEmpty();
         db.saveWallet(wallet);
 
-        // Derive and store initial addresses (lookahead)
-        byte[] seed       = BIP39.mnemonicToSeed(mnemonic, passphrase);
+        // Derive master key and initial addresses
+        byte[] seed        = BIP39.mnemonicToSeed(mnemonic, passphrase);
         BIP32.HDKey master = BIP32.masterFromSeed(seed);
         WalletCrypto.zeroBytes(seed);
 

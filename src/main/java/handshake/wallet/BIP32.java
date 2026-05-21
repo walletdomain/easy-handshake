@@ -140,10 +140,10 @@ public class BIP32 {
                 data = new byte[37];
                 System.arraycopy(parent.publicKey, 0, data, 0, 33);
             }
-            // Append index as 4 big-endian bytes
-            data[33] = (byte)(index >> 24);
-            data[34] = (byte)(index >> 16);
-            data[35] = (byte)(index >> 8);
+            // Append index as 4 big-endian bytes (must use unsigned shift for hardened indices)
+            data[33] = (byte)(index >>> 24);
+            data[34] = (byte)(index >>> 16);
+            data[35] = (byte)(index >>> 8);
             data[36] = (byte) index;
 
             byte[] I  = hmacSha512(parent.chainCode, data);
