@@ -104,6 +104,23 @@
     }
     .name-expiry.warn  { color:var(--warn); }
     .name-expiry.danger { color:var(--danger); }
+    .action-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.06em;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 0.25rem;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .action-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
 
     /* Modal overlay */
     .modal-overlay {

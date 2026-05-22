@@ -610,6 +610,8 @@ public class NodeHttpServer {
                 first = false;
             }
             sb.append("]");
+            // Include current block height for expiry calculations
+            sb.append(",\"tipHeight\":").append(db.getBlockDataTip());
             // Include scan status
             if (walletScanner != null) {
                 sb.append(",\"scan\":{");

@@ -4,6 +4,7 @@
 
 let activeWalletId = null;
 let wallets        = [];
+let tipHeight      = 0;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ async function loadWallets() {
 
     const data = await res.json();
     wallets = data.wallets || data;
+    tipHeight = data.tipHeight || 0;
     renderSidebar();
     renderScanStatus(data.scan);
     if (data.scan && data.scan.scanning) pollScanStatus();
@@ -113,6 +115,7 @@ async function pollScanStatus() {
     try {
       const res  = await fetch('/api/wallet');
       const data = await res.json();
+      if (data.tipHeight) tipHeight = data.tipHeight;
       renderScanStatus(data.scan);
       // If scan finished, refresh wallet balance and stop polling
       if (!data.scan || !data.scan.scanning) {
@@ -248,42 +251,177 @@ function renderWalletMain(data) {
   if (unlocked) loadNames(w.id);
 }
 
+// ── IDN / Punycode decoding ───────────────────────────────────────────────────
+
+function decodePunycode(input) {
+  // RFC 3492 Punycode decoder
+  const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
+  const initialBias = 72, initialN = 128, delimiter = '-';
+  function adapt(delta, numPoints, firstTime) {
+    delta = firstTime ? Math.floor(delta / damp) : delta >> 1;
+    delta += Math.floor(delta / numPoints);
+    let k = 0;
+    while (delta > ((base - tMin) * tMax) >> 1) { delta = Math.floor(delta / (base - tMin)); k += base; }
+    return k + Math.floor(((base - tMin + 1) * delta) / (delta + skew));
+  }
+  function decodeDigit(cp) {
+    return cp - 48 < 10 ? cp - 22 : cp - 65 < 26 ? cp - 65 : cp - 97 < 26 ? cp - 97 : base;
+  }
+  const src = input.toLowerCase().startsWith('xn--') ? input.slice(4) : input;
+  const output = [];
+  const basic = src.lastIndexOf(delimiter);
+  if (basic > 0) for (let j = 0; j < basic; j++) output.push(src.charCodeAt(j));
+  let i = 0, n = initialN, bias = initialBias, idx = basic > 0 ? basic + 1 : 0;
+  while (idx < src.length) {
+    const oldi = i; let w = 1;
+    for (let k = base; ; k += base) {
+      const digit = decodeDigit(src.charCodeAt(idx++));
+      i += digit * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (digit < t) break;
+      w *= base - t;
+    }
+    const out = output.length + 1;
+    bias = adapt(i - oldi, out, oldi === 0);
+    n += Math.floor(i / out);
+    i %= out;
+    output.splice(i++, 0, n);
+  }
+  return String.fromCodePoint(...output);
+}
+
+function decodeIdn(name) {
+  if (!name.toLowerCase().includes('xn--')) return null;
+  try {
+    const decoded = decodePunycode(name);
+    return decoded !== name ? decoded : null;
+  } catch (e) { return null; }
+}
+
+function nameDisplay(name) {
+  const decoded = decodeIdn(name);
+  if (!decoded) return '<span class="name-tag">.' + esc(name) + '</span>';
+  return '<span class="name-tag">.' + esc(name) + '</span>'
+      + ' <span style="color:var(--muted);font-size:0.75rem">(' + esc(decoded) + ')</span>';
+}
+
+// ── Names table ──────────────────────────────────────────────────────────────
+
+let namesSortCol = 'name';
+let namesSortDir = 1; // 1 = asc, -1 = desc
+let namesCache   = [];
+
 async function loadNames(walletId) {
   try {
-    const res   = await fetch('/api/wallet/' + walletId + '/names');
-    const names = await res.json();
-    const el    = document.getElementById('names-panel');
-    if (!el) return;
-
-    if (names.length === 0) {
-      el.innerHTML = `<div class="wallet-panel-title">Owned Names</div>
-        <div style="color:var(--muted);font-size:0.78rem">
-          No names found in this wallet yet.<br>
-          Names will appear here after the UTXO scanner runs.
-        </div>`;
-      return;
-    }
-
-    el.innerHTML = `<div class="wallet-panel-title">Owned Names (${names.length})</div>`
-        + names.map(n => `
-        <div class="name-row">
-          <span class="name-tag">.${esc(n.name)}</span>
-          <span class="name-expiry ${expiryClass(n.expireHeight)}">
-            expires block ${n.expireHeight.toLocaleString()}
-          </span>
-          <span style="font-size:0.65rem;color:var(--muted);
-                       font-family:'Space Mono',monospace">
-            ${esc(n.state)}
-          </span>
-        </div>`).join('');
+    const res = await fetch('/api/wallet/' + walletId + '/names');
+    namesCache = await res.json();
+    renderNamesTable();
   } catch (err) { /* ignore */ }
 }
 
+function renderNamesTable() {
+  const el = document.getElementById('names-panel');
+  if (!el) return;
+
+  if (namesCache.length === 0) {
+    el.innerHTML = `<div class="wallet-panel-title">Owned Names</div>
+      <div style="color:var(--muted);font-size:0.78rem;padding:1rem 0">
+        No names found in this wallet yet.<br>
+        Names will appear here after the UTXO scanner runs.
+      </div>`;
+    return;
+  }
+
+  const sorted = [...namesCache].sort((a, b) => {
+    let va, vb;
+    if (namesSortCol === 'name')    { va = a.name;         vb = b.name; }
+    if (namesSortCol === 'expires') { va = a.expireHeight; vb = b.expireHeight; }
+    if (namesSortCol === 'status')  { va = a.state;        vb = b.state; }
+    if (va < vb) return -namesSortDir;
+    if (va > vb) return  namesSortDir;
+    return 0;
+  });
+
+  const arrow  = col => namesSortCol === col ? (namesSortDir === 1 ? ' ↑' : ' ↓') : '';
+  const thBase = `cursor:pointer;user-select:none;font-size:0.65rem;letter-spacing:0.08em;
+    color:var(--muted);padding:0.5rem 0.75rem;text-align:left;
+    border-bottom:1px solid var(--border);font-family:'Space Mono',monospace;white-space:nowrap`;
+  const thNoSort = `font-size:0.65rem;letter-spacing:0.08em;color:var(--muted);
+    padding:0.5rem 0.75rem;text-align:left;border-bottom:1px solid var(--border);
+    font-family:'Space Mono',monospace`;
+
+  el.innerHTML = `
+    <div class="wallet-panel-title">Owned Names (${namesCache.length})</div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <thead><tr>
+        <th style="${thBase}" onclick="sortNames('name')"
+            onmouseover="this.style.color='var(--accent)'"
+            onmouseout="this.style.color='var(--muted)'">NAME${arrow('name')}</th>
+        <th style="${thBase}" onclick="sortNames('expires')"
+            onmouseover="this.style.color='var(--accent)'"
+            onmouseout="this.style.color='var(--muted)'">EXPIRES${arrow('expires')}</th>
+        <th style="${thBase}" onclick="sortNames('status')"
+            onmouseover="this.style.color='var(--accent)'"
+            onmouseout="this.style.color='var(--muted)'">STATUS${arrow('status')}</th>
+        <th style="${thNoSort}">ACTIONS</th>
+      </tr></thead>
+      <tbody>
+        ${sorted.map(n => `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:0.6rem 0.75rem">
+              ${nameDisplay(n.name)}
+            </td>
+            <td style="padding:0.6rem 0.75rem">
+              <span class="name-expiry ${expiryClass(n.expireHeight)}">
+                ${expiryText(n.expireHeight)}
+              </span>
+            </td>
+            <td style="padding:0.6rem 0.75rem;font-size:0.65rem;
+                       color:var(--muted);font-family:'Space Mono',monospace">
+              ${esc(n.state)}
+            </td>
+            <td style="padding:0.6rem 0.75rem;white-space:nowrap">
+              <button class="action-btn" onclick="transferName('${esc(n.name)}')">Transfer</button>
+              <button class="action-btn" onclick="manageDns('${esc(n.name)}')">DNS</button>
+              <button class="action-btn" onclick="nameHistory('${esc(n.name)}')">History</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function sortNames(col) {
+  if (namesSortCol === col) namesSortDir *= -1;
+  else { namesSortCol = col; namesSortDir = 1; }
+  renderNamesTable();
+}
+
+function transferName(name) { alert('Transfer .' + name + ' — coming soon'); }
+function manageDns(name)    { alert('DNS for .'  + name + ' — coming soon'); }
+function nameHistory(name)  { alert('History for .' + name + ' — coming soon'); }
+
+function expiryText(expireHeight) {
+  const remaining = expireHeight - tipHeight;
+  if (remaining <= 0) return 'expired';
+  // ~144 blocks per day (10 min per block)
+  const days   = Math.floor(remaining / 144);
+  const years  = Math.floor(days / 365);
+  const months = Math.floor((days % 365) / 30);
+  const parts  = [];
+  if (years  > 0) parts.push(years  + (years  === 1 ? ' year'  : ' years'));
+  if (months > 0) parts.push(months + (months === 1 ? ' month' : ' months'));
+  if (parts.length === 0) {
+    const weeks = Math.floor(days / 7);
+    if (weeks > 0) return `expires in ${weeks} ${weeks === 1 ? 'week' : 'weeks'}`;
+    return `expires in ${days} ${days === 1 ? 'day' : 'days'}`;
+  }
+  return `expires in ${parts.join(' ')}`;
+}
+
 function expiryClass(expireHeight) {
-  // Rough estimate: ~144 blocks/day, ~1008/week, ~4380/month
-  const remaining = expireHeight - 330000; // approximate
-  if (remaining < 1008)  return 'danger';
-  if (remaining < 4380)  return 'warn';
+  const remaining = expireHeight - tipHeight;
+  if (remaining < 1008)  return 'danger';  // < 1 week
+  if (remaining < 4320)  return 'warn';    // < 1 month
   return '';
 }
 
