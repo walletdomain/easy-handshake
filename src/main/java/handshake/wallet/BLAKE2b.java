@@ -88,16 +88,17 @@ public final class BLAKE2b {
         int dataLen = input.length;
         long byteCount = 0;
 
-        // Process all blocks except the last
-        while (dataLen - offset > 64) {
-            byteCount += 64;
+        // Process all full 128-byte blocks except the last
+        // BLAKE2b block size is 128 bytes (BLAKE2s uses 64)
+        while (dataLen - offset > 128) {
+            byteCount += 128;
             loadBlock(m, input, offset);
             compress(h, v, m, byteCount, false);
-            offset += 64;
+            offset += 128;
         }
 
-        // Last block (pad with zeros)
-        byte[] lastBlock = new byte[64];
+        // Last block (pad with zeros to 128 bytes)
+        byte[] lastBlock = new byte[128];
         int remaining = dataLen - offset;
         if (remaining > 0)
             System.arraycopy(input, offset, lastBlock, 0, remaining);

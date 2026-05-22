@@ -69,6 +69,17 @@ function showWelcomeState() {
     </div>`;
 }
 
+async function triggerScan(walletId) {
+  const btn = document.getElementById('scan-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '🔍 Scanning...'; }
+  try {
+    await fetch('/api/wallet/scan', { method: 'POST' });
+    pollScanStatus();
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Scan'; }
+  }
+}
+
 // ── Scan status ───────────────────────────────────────────────────────────────
 
 let scanPolling = false;
@@ -120,6 +131,8 @@ async function pollScanStatus() {
       // If scan finished, refresh wallet balance and stop polling
       if (!data.scan || !data.scan.scanning) {
         scanPolling = false;
+        const btn = document.getElementById('scan-btn');
+        if (btn) { btn.disabled = false; btn.textContent = '🔍 Scan'; }
         if (activeWalletId) selectWallet(activeWalletId);
         break;
       }
@@ -205,13 +218,57 @@ function renderWalletMain(data) {
       </div>
       <div style="display:flex;gap:0.75rem;justify-content:center;
                   padding:0.75rem 0 0.25rem">
-        <button class="btn-primary" style="max-width:140px;opacity:0.45;
-                cursor:not-allowed" title="Coming soon">
+        <button class="btn-primary" style="max-width:140px"
+                onclick="showSendPanel('${w.id}')">
           ↑ Send
         </button>
         <button class="btn-primary" style="max-width:140px"
                 onclick="showReceivePanel('${w.id}')">
           ↓ Receive
+        </button>
+        <button class="btn-secondary" style="max-width:140px"
+                onclick="triggerScan('${w.id}')" id="scan-btn">
+          🔍 Scan
+        </button>
+      </div>
+    </div>
+
+    <!-- Send panel (shown on demand) -->
+    <div id="send-panel" style="display:none" class="wallet-panel">
+      <div class="wallet-panel-title">Send HNS</div>
+      <div style="margin-bottom:0.75rem">
+        <label style="font-size:0.72rem;color:var(--muted);
+                       font-family:'Space Mono',monospace;
+                       letter-spacing:0.06em">RECIPIENT ADDRESS</label>
+        <input id="send-addr" type="text"
+               placeholder="hs1q..."
+               style="width:100%;box-sizing:border-box;margin-top:0.35rem;
+                      background:var(--bg-deep);border:1px solid var(--border);
+                      color:var(--fg);font-family:'Space Mono',monospace;
+                      font-size:0.78rem;padding:0.5rem 0.6rem;border-radius:6px;
+                      outline:none"/>
+      </div>
+      <div style="margin-bottom:1rem">
+        <label style="font-size:0.72rem;color:var(--muted);
+                       font-family:'Space Mono',monospace;
+                       letter-spacing:0.06em">AMOUNT (HNS)</label>
+        <input id="send-amount" type="number" min="0.000001" step="0.000001"
+               placeholder="0.000000"
+               style="width:100%;box-sizing:border-box;margin-top:0.35rem;
+                      background:var(--bg-deep);border:1px solid var(--border);
+                      color:var(--fg);font-family:'Space Mono',monospace;
+                      font-size:0.78rem;padding:0.5rem 0.6rem;border-radius:6px;
+                      outline:none"/>
+      </div>
+      <div id="send-status" style="font-size:0.75rem;margin-bottom:0.75rem;
+                                    min-height:1.2rem"></div>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn-primary" onclick="submitSend()"
+                id="send-submit-btn">
+          Send
+        </button>
+        <button class="btn-secondary" onclick="hideSendPanel()">
+          Cancel
         </button>
       </div>
     </div>
@@ -458,6 +515,80 @@ function copyReceiveAddr() {
       }, 2500);
     }
   });
+}
+
+// ── Send panel ────────────────────────────────────────────────────────────────
+
+let sendWalletId = null;
+
+function showSendPanel(walletId) {
+  sendWalletId = walletId;
+  const panel = document.getElementById('send-panel');
+  if (!panel) return;
+  document.getElementById('send-addr').value   = '';
+  document.getElementById('send-amount').value = '';
+  document.getElementById('send-status').textContent = '';
+  document.getElementById('send-status').style.color = '';
+  document.getElementById('send-submit-btn').disabled = false;
+  document.getElementById('receive-panel').style.display = 'none';
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  document.getElementById('send-addr').focus();
+}
+
+function hideSendPanel() {
+  const panel = document.getElementById('send-panel');
+  if (panel) panel.style.display = 'none';
+  sendWalletId = null;
+}
+
+async function submitSend() {
+  const addr   = document.getElementById('send-addr')?.value?.trim();
+  const amount = document.getElementById('send-amount')?.value?.trim();
+  const status = document.getElementById('send-status');
+  const btn    = document.getElementById('send-submit-btn');
+
+  if (!addr || !addr.startsWith('hs1')) {
+    status.textContent = 'Enter a valid hs1q... address.';
+    status.style.color = 'var(--danger)';
+    return;
+  }
+  const amt = parseFloat(amount);
+  if (!amt || amt <= 0) {
+    status.textContent = 'Enter a valid amount greater than 0.';
+    status.style.color = 'var(--danger)';
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = 'Building and signing transaction...';
+  status.style.color = 'var(--muted)';
+
+  try {
+    const res  = await fetch('/api/wallet/' + sendWalletId + '/send', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ address: addr, amount: amt.toFixed(6) })
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      status.innerHTML =
+          `✓ Sent! txid: <span style="font-size:0.65rem;word-break:break-all">${data.txid}</span>` +
+          `<br>Fee: ${data.fee.toFixed(6)} HNS — accepted by ${data.peers} peer(s)`;
+      status.style.color = 'var(--accent2)';
+      // Refresh balance after a short delay
+      setTimeout(() => loadWallets(), 3000);
+    } else {
+      status.textContent = 'Error: ' + (data.error || 'unknown error');
+      status.style.color = 'var(--danger)';
+      btn.disabled = false;
+    }
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+    status.style.color = 'var(--danger)';
+    btn.disabled = false;
+  }
 }
 
 // ── Lock / Unlock ─────────────────────────────────────────────────────────────

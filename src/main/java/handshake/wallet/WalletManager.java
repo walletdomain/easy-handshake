@@ -24,7 +24,7 @@ public class WalletManager {
     // ── Constants ─────────────────────────────────────────────────────────────
 
     private static final long   LOCK_TIMEOUT_MS   = 15 * 60 * 1000L;
-    private static final int    LOOKAHEAD          = 1; // start with index 0 only; scanner extends on match
+    private static final int    LOOKAHEAD          = 1;
     private static final String WALLET_DB_PATH     = "wallet.mv.db";
 
     // ── Singleton ─────────────────────────────────────────────────────────────
@@ -246,6 +246,18 @@ public class WalletManager {
     /** Locks all wallets. */
     public void lockAll() {
         for (String id : sessions.keySet()) lock(id);
+    }
+
+    /**
+     * Returns the master HD key for an unlocked wallet.
+     * Used by HNSSigner to derive private keys for signing.
+     * Returns null if the wallet is locked or not found.
+     */
+    public BIP32.HDKey getMasterKey(String walletId) {
+        WalletSession session = sessions.get(walletId);
+        if (session == null || session.isExpired()) return null;
+        session.touch();
+        return session.masterKey;
     }
 
     public boolean isUnlocked(String walletId) {

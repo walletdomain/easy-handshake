@@ -573,6 +573,10 @@ public class NodeHttpServer {
                     String id = extractWalletId(path, "/lock");
                     walletManager.lock(id);
                     sendJson(exchange, 200, "{\"ok\":true}");
+                    // POST /api/wallet/{id}/send
+                } else if (path.endsWith("/send") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/send");
+                    handleSend(exchange, id, body);
                     // GET /api/wallet/{id}/address
                 } else if (path.endsWith("/address") && method.equals("GET")) {
                     String id = extractWalletId(path, "/address");
@@ -652,6 +656,43 @@ public class NodeHttpServer {
             }
             sb.append("]}");
             sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleSend(com.sun.net.httpserver.HttpExchange ex,
+                                String walletId, String body) throws Exception {
+            String toAddr  = extractJsonString(body, "address");
+            String amtStr  = extractJsonString(body, "amount");
+            if (toAddr == null || toAddr.isBlank())
+                throw new IllegalArgumentException("address is required");
+            if (amtStr == null || amtStr.isBlank())
+                throw new IllegalArgumentException("amount is required");
+
+            double amount = Double.parseDouble(amtStr);
+            if (amount <= 0)
+                throw new IllegalArgumentException("amount must be positive");
+
+            // Build and sign the transaction
+            handshake.wallet.HNSSigner signer = new handshake.wallet.HNSSigner(
+                    walletManager, walletManager.getWalletDB());
+            handshake.wallet.HNSTxBuilder.SignedTx tx =
+                    signer.buildSend(walletId, toAddr, amount, 0);
+
+            System.out.printf("[API] Sending %.6f HNS to %s txid=%s%n",
+                    amount, toAddr, tx.txid);
+
+            // Broadcast to network
+            handshake.wallet.HNSBroadcaster.BroadcastResult result =
+                    handshake.wallet.HNSBroadcaster.broadcast(tx);
+
+            if (result.success) {
+                sendJson(ex, 200, String.format(
+                        "{\"ok\":true,\"txid\":\"%s\",\"fee\":%.6f,\"peers\":%d}",
+                        tx.txid, tx.fee / 1_000_000.0, result.peersAccepted));
+            } else {
+                String err = result.errorMessage != null
+                        ? result.errorMessage : "broadcast failed";
+                sendJson(ex, 500, "{\"error\":\"" + err + "\"}");
+            }
         }
 
         private void handleCreate(com.sun.net.httpserver.HttpExchange ex,

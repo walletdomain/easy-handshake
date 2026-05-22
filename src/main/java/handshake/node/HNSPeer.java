@@ -528,6 +528,14 @@ public class HNSPeer {
         send(HNSMessage.TYPE_PONG, HNSMessage.buildPong(HNSMessage.parsePing(payload)));
     }
 
+    /**
+     * Sends a raw signed transaction to this peer.
+     * Called by HNSBroadcaster after the VERSION/VERACK handshake.
+     */
+    public void sendTx(byte[] rawTx) throws Exception {
+        send(HNSMessage.TYPE_TX, rawTx);
+    }
+
     void send(int type, byte[] payload) throws Exception {
         byte[] framed    = HNSMessage.frame(type, payload);
         byte[] encrypted = brontide.encryptMessage(framed);
