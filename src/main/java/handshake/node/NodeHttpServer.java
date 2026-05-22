@@ -712,9 +712,10 @@ public class NodeHttpServer {
         }
 
         private String namesToJson(String walletId) {
+            int currentHeight = db.getBlockDataTip();
             StringBuilder sb = new StringBuilder("[");
             boolean first = true;
-            for (var n : walletManager.getNames(walletId)) {
+            for (var n : walletManager.getNames(walletId, currentHeight)) {
                 if (!first) sb.append(",");
                 sb.append(n.toJson());
                 first = false;

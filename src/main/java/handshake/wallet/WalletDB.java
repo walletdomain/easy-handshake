@@ -340,10 +340,18 @@ public class WalletDB implements AutoCloseable {
     }
 
     public List<NameRecord> getNamesForWallet(String walletId) {
+        return getNamesForWallet(walletId, 0);
+    }
+
+    public List<NameRecord> getNamesForWallet(String walletId, int currentHeight) {
         List<NameRecord> list = new ArrayList<>();
         for (Map.Entry<String, String> e : names.entrySet()) {
             NameRecord r = NameRecord.fromStorage(e.getKey(), e.getValue());
-            if (walletId.equals(r.walletId)) list.add(r);
+            if (!walletId.equals(r.walletId)) continue;
+            if (r.state.equals("TRANSFERRING")) continue;
+            // Filter expired names if we know the current height
+            if (currentHeight > 0 && r.expireHeight < currentHeight) continue;
+            list.add(r);
         }
         list.sort(Comparator.comparing(n -> n.name));
         return list;

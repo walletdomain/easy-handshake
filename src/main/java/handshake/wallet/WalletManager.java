@@ -23,8 +23,8 @@ public class WalletManager {
 
     // ── Constants ─────────────────────────────────────────────────────────────
 
-    private static final long   LOCK_TIMEOUT_MS   = 15 * 60 * 1000L; // 15 minutes
-    private static final int    LOOKAHEAD          = 20; // derive this many addresses ahead
+    private static final long   LOCK_TIMEOUT_MS   = 15 * 60 * 1000L;
+    private static final int    LOOKAHEAD          = 1; // start with index 0 only; scanner extends on match
     private static final String WALLET_DB_PATH     = "wallet.mv.db";
 
     // ── Singleton ─────────────────────────────────────────────────────────────
@@ -322,7 +322,11 @@ public class WalletManager {
     }
 
     public List<WalletDB.NameRecord> getNames(String walletId) {
-        return db.getNamesForWallet(walletId);
+        return db.getNamesForWallet(walletId, 0); // 0 = no height filter for now
+    }
+
+    public List<WalletDB.NameRecord> getNames(String walletId, int currentHeight) {
+        return db.getNamesForWallet(walletId, currentHeight);
     }
 
     public boolean hasWallets() {
@@ -358,26 +362,26 @@ public class WalletManager {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /** Derives and stores addresses for a wallet using a master key. */
+    /** Derives and stores receiving addresses only for initial wallet setup. */
     private void deriveAddresses(String walletId, BIP32.HDKey master,
                                  int account, int fromIndex, int count) {
-        for (int change = 0; change <= 1; change++) {
-            for (int i = fromIndex; i < fromIndex + count; i++) {
-                BIP32.HDKey key = BIP32.deriveAddress(master, account, change, i);
-                String address  = HNSAddress.fromPublicKey(key.publicKey);
-                String path     = "m/44'/5353'/" + account + "'/" + change + "/" + i;
-                WalletDB.AddressRecord rec = new WalletDB.AddressRecord();
-                rec.walletId  = walletId;
-                rec.path      = path;
-                rec.address   = address;
-                rec.publicKey = bytesToHex(key.publicKey);
-                rec.account   = account;
-                rec.change    = change;
-                rec.index     = i;
-                rec.used      = false;
-                rec.balance   = 0;
-                db.saveAddress(rec);
-            }
+        // Only derive receiving addresses (change=0) initially.
+        // Change addresses are derived on demand when sending transactions.
+        for (int i = fromIndex; i < fromIndex + count; i++) {
+            BIP32.HDKey key = BIP32.deriveAddress(master, account, 0, i);
+            String address  = HNSAddress.fromPublicKey(key.publicKey);
+            String path     = "m/44'/5353'/" + account + "'/0/" + i;
+            WalletDB.AddressRecord rec = new WalletDB.AddressRecord();
+            rec.walletId  = walletId;
+            rec.path      = path;
+            rec.address   = address;
+            rec.publicKey = bytesToHex(key.publicKey);
+            rec.account   = account;
+            rec.change    = 0;
+            rec.index     = i;
+            rec.used      = false;
+            rec.balance   = 0;
+            db.saveAddress(rec);
         }
     }
 

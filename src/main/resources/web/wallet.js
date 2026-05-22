@@ -30,6 +30,7 @@ async function loadWallets() {
     wallets = data.wallets || data;
     renderSidebar();
     renderScanStatus(data.scan);
+    if (data.scan && data.scan.scanning) pollScanStatus();
 
     if (wallets.length === 0) {
       // No wallets yet — show create/restore immediately
@@ -68,11 +69,11 @@ function showWelcomeState() {
 
 // ── Scan status ───────────────────────────────────────────────────────────────
 
+let scanPolling = false;
+
 function renderScanStatus(scan) {
-  // Remove existing scan bar if present
   const existing = document.getElementById('scan-progress-bar');
   if (existing) existing.remove();
-
   if (!scan || !scan.scanning) return;
 
   const bar = document.createElement('div');
@@ -86,12 +87,10 @@ function renderScanStatus(scan) {
     font-family:'Space Mono',monospace;
     font-size:0.75rem;
   `;
-  const etaStr = scan.eta > 0
-      ? ' · ETA ' + formatUptime(scan.eta)
-      : '';
+  const etaStr = scan.eta > 0 ? ' · ETA ' + formatUptime(scan.eta) : '';
   bar.innerHTML = `
     <div style="display:flex;justify-content:space-between;margin-bottom:0.4rem">
-      <span style="color:var(--accent)">🔍 Scanning blockchain for wallet UTXOs</span>
+      <span style="color:var(--accent)">🔍 Scanning blockchain for transaction history</span>
       <span style="color:var(--accent)">${scan.pct}%${etaStr}</span>
     </div>
     <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
@@ -100,21 +99,32 @@ function renderScanStatus(scan) {
     </div>
     <div style="color:var(--muted);font-size:0.65rem;margin-top:0.3rem">
       Block ${scan.progress.toLocaleString()} of ${scan.total.toLocaleString()}
-    </div>
-  `;
+    </div>`;
 
-  // Insert before the wallet layout
   const layout = document.querySelector('.wallet-layout');
   if (layout) layout.parentNode.insertBefore(bar, layout);
+}
 
-  // Poll every 5s while scanning
-  setTimeout(async () => {
+async function pollScanStatus() {
+  if (scanPolling) return;
+  scanPolling = true;
+  while (true) {
+    await new Promise(r => setTimeout(r, 3000));
     try {
       const res  = await fetch('/api/wallet');
       const data = await res.json();
       renderScanStatus(data.scan);
-    } catch (e) {}
-  }, 5000);
+      // If scan finished, refresh wallet balance and stop polling
+      if (!data.scan || !data.scan.scanning) {
+        scanPolling = false;
+        if (activeWalletId) selectWallet(activeWalletId);
+        break;
+      }
+    } catch (e) {
+      scanPolling = false;
+      break;
+    }
+  }
 }
 
 function formatUptime(seconds) {
@@ -347,8 +357,8 @@ async function unlockWallet() {
       hideModals();
       await loadWallets();
       selectWallet(id);
-      // Start scan if not already running
-      fetch('/api/wallet/scan', { method: 'POST' }).catch(() => {});
+      // Start polling for scan progress
+      pollScanStatus();
     } else {
       errEl.textContent = data.error || 'Incorrect password';
       errEl.classList.remove('hidden');
@@ -513,6 +523,7 @@ async function restoreWallet() {
       selectWallet(data.walletId);
       // Trigger scan for newly restored wallet
       fetch('/api/wallet/scan', { method: 'POST' }).catch(() => {});
+      pollScanStatus();
     } else {
       showErr(errEl, data.error || 'Failed to recover wallet');
     }

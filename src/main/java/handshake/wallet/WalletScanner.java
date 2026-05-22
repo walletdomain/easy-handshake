@@ -69,6 +69,26 @@ public class WalletScanner {
     public void startScan() {
         if (scanning) return;
         if (walletDb == null || walletDb.getAllWallets().isEmpty()) return;
+
+        // Pre-derive first 100 receiving AND change addresses while wallet is unlocked.
+        if (walletManager != null) {
+            for (WalletDB.WalletRecord w : walletDb.getAllWallets()) {
+                if (walletManager.isUnlocked(w.id)) {
+                    for (int change = 0; change <= 1; change++) {
+                        int maxIdx = -1;
+                        for (WalletDB.AddressRecord a : walletDb.getAddressesForWallet(w.id))
+                            if (a.change == change) maxIdx = Math.max(maxIdx, a.index);
+                        int target = 99;
+                        if (maxIdx < target)
+                            walletManager.deriveMoreAddresses(
+                                    w.id, 0, change, maxIdx + 1, target - maxIdx);
+                    }
+                    System.out.printf("[WalletScanner] Pre-derived 100 receiving + 100 change addresses for '%s'%n",
+                            w.name);
+                }
+            }
+        }
+
         Thread t = new Thread(this::runScan, "wallet-scanner");
         t.setDaemon(true);
         t.start();
@@ -89,6 +109,7 @@ public class WalletScanner {
 
             Map<String, String> addrMap  = buildAddressMap();
             Map<String, String> utxoMap  = buildUtxoMap();
+
             int lastCommit = startHeight;
 
             for (int h = startHeight; h <= tipHeight; h++) {
@@ -167,19 +188,25 @@ public class WalletScanner {
                 if (walletId == null) continue;
 
                 // Record UTXO
+                int covType = out.covenant != null ? out.covenant.type : 0;
+                boolean lockedInName = (covType == COV_REGISTER
+                        || covType == COV_UPDATE
+                        || covType == COV_RENEW
+                        || covType == COV_TRANSFER
+                        || covType == COV_FINALIZE);
                 WalletDB.UtxoRecord u = new WalletDB.UtxoRecord();
                 u.txHash      = txHash;
                 u.outputIndex = i;
                 u.address     = addr;
                 u.value       = out.value;
                 u.height      = height;
-                u.spent       = false;
+                u.spent       = lockedInName;
                 u.coinbase    = tx.inputs.size() == 1
                         && tx.inputs.get(0).isCoinbase();
                 walletDb.saveUtxo(u);
                 utxoMap.put(txHash + ":" + i, walletId);
 
-                // Mark address used and extend lookahead
+                // Mark address used and extend lookahead on any match
                 markUsed(walletId, addr, out.value);
                 extendLookahead(walletId, addr, addrMap);
 
@@ -235,17 +262,21 @@ public class WalletScanner {
             if (a.address.equals(usedAddress)) { used = a; break; }
         if (used == null) return;
 
+        // Find highest derived index on this chain (receiving or change)
         int maxIdx = 0;
         for (WalletDB.AddressRecord a : walletDb.getAddressesForWallet(walletId))
             if (a.change == used.change) maxIdx = Math.max(maxIdx, a.index);
 
-        if (maxIdx - used.index < GAP_LIMIT && walletManager != null
-                && walletManager.isUnlocked(walletId)) {
-            int from  = maxIdx + 1;
-            walletManager.deriveMoreAddresses(walletId, used.account,
-                    used.change, from, GAP_LIMIT);
-            for (WalletDB.AddressRecord a : walletDb.getAddressesForWallet(walletId))
-                if (a.index >= from) addrMap.put(a.address, walletId);
+        int target = used.index + GAP_LIMIT;
+        if (maxIdx >= target) return;
+
+        if (walletManager != null && walletManager.isUnlocked(walletId)) {
+            for (int i = maxIdx + 1; i <= target; i++) {
+                walletManager.deriveMoreAddresses(walletId, used.account, used.change, i, 1);
+                for (WalletDB.AddressRecord a : walletDb.getAddressesForWallet(walletId))
+                    if (a.change == used.change && a.index == i)
+                        addrMap.put(a.address, walletId);
+            }
         }
     }
 
@@ -269,13 +300,30 @@ public class WalletScanner {
         if (type != COV_REGISTER && type != COV_UPDATE &&
                 type != COV_RENEW    && type != COV_TRANSFER &&
                 type != COV_FINALIZE) return;
-        if (out.covenant.items == null || out.covenant.items.isEmpty()) return;
+        if (out.covenant.items == null || out.covenant.items.size() < 3) return;
 
         String name = null;
         try {
-            byte[] nameBytes = out.covenant.items.get(0);
-            name = new String(nameBytes, java.nio.charset.StandardCharsets.UTF_8)
-                    .replaceAll("[^a-z0-9\\-]", "");
+            if (out.covenant.items.size() >= 3) {
+                byte[] nameBytes = out.covenant.items.get(2);
+                String candidate = new String(nameBytes,
+                        java.nio.charset.StandardCharsets.US_ASCII)
+                        .toLowerCase()
+                        .replaceAll("[^a-z0-9\\-]", "");
+                if (!candidate.isEmpty()) name = candidate;
+            }
+            // Fallback: try items[0] as raw name
+            if (name == null && !out.covenant.items.isEmpty()) {
+                byte[] nameBytes = out.covenant.items.get(0);
+                if (nameBytes.length <= 63 && nameBytes.length > 0) {
+                    String candidate = new String(nameBytes,
+                            java.nio.charset.StandardCharsets.US_ASCII)
+                            .toLowerCase()
+                            .replaceAll("[^a-z0-9\\-]", "");
+                    if (!candidate.isEmpty() && candidate.length() == nameBytes.length)
+                        name = candidate;
+                }
+            }
         } catch (Exception ignored) {}
         if (name == null || name.isEmpty()) return;
 
@@ -291,8 +339,8 @@ public class WalletScanner {
             case COV_REGISTER -> "REGISTERED";
             case COV_UPDATE   -> "UPDATED";
             case COV_RENEW    -> "RENEWED";
-            case COV_TRANSFER -> "TRANSFER";
-            case COV_FINALIZE -> "CLOSED";
+            case COV_TRANSFER -> "TRANSFERRING"; // 48hr lockup in progress
+            case COV_FINALIZE -> "REGISTERED";   // transfer completed — name is now owned
             default           -> "UNKNOWN";
         };
         walletDb.saveName(rec);
@@ -333,9 +381,10 @@ public class WalletScanner {
     }
 
     private void reportBalances() {
+        int currentHeight = chainDb != null ? chainDb.getBlockDataTip() : 0;
         for (WalletDB.WalletRecord w : walletDb.getAllWallets()) {
             long bal   = walletDb.getBalanceForWallet(w.id);
-            int  names = walletDb.getNamesForWallet(w.id).size();
+            int  names = walletDb.getNamesForWallet(w.id, currentHeight).size();
             System.out.printf("[WalletScanner] '%s': %s HNS, %d name(s)%n",
                     w.name, fmtHns(bal), names);
             EventBus.get().system("Wallet '" + w.name + "': "
