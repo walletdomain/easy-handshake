@@ -466,7 +466,103 @@ function sortNames(col) {
   renderNamesTable();
 }
 
-function transferName(name) { alert('Transfer .' + name + ' — coming soon'); }
+// ── Transfer Name ─────────────────────────────────────────────────────────────
+
+let transferCurrentName = null;
+
+function transferName(name) {
+  const nameRec = namesCache.find(n => n.name === name);
+  transferCurrentName = name;
+
+  document.getElementById('transfer-modal-name').textContent = '.' + name;
+  document.getElementById('transfer-recipient').value = '';
+  document.getElementById('transfer-error').classList.add('hidden');
+  document.getElementById('transfer-success').classList.add('hidden');
+  document.getElementById('transfer-submit-btn').disabled = false;
+  document.getElementById('transfer-submit-btn').style.opacity = '1';
+  document.getElementById('transfer-submit-btn').textContent = 'Initiate Transfer';
+
+  // If already transferring, show status instead of form
+  const formSection = document.getElementById('transfer-form-section');
+  const statusSection = document.getElementById('transfer-status-section');
+  if (nameRec && (nameRec.state === 'TRANSFERRING' || nameRec.state === 'READY_TO_FINALIZE')) {
+    formSection.style.display = 'none';
+    statusSection.style.display = 'block';
+    const msg = nameRec.state === 'READY_TO_FINALIZE'
+        ? '✓ Lockup period complete — FINALIZE will be sent automatically.'
+        : '⏳ Transfer in progress — FINALIZE will be sent automatically after ~288 blocks (~2 days).';
+    document.getElementById('transfer-status-msg').textContent = msg;
+  } else {
+    formSection.style.display = 'block';
+    statusSection.style.display = 'none';
+  }
+
+  document.getElementById('transfer-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('transfer-recipient').focus(), 100);
+}
+
+function hideTransferModal() {
+  document.getElementById('transfer-modal').classList.add('hidden');
+  transferCurrentName = null;
+}
+
+async function submitTransfer() {
+  const recipient = document.getElementById('transfer-recipient').value.trim();
+  const btn       = document.getElementById('transfer-submit-btn');
+  const errEl     = document.getElementById('transfer-error');
+
+  errEl.classList.add('hidden');
+
+  if (!recipient) {
+    errEl.textContent = 'Recipient address is required.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (!recipient.startsWith('hs1')) {
+    errEl.textContent = 'Address must start with hs1 (Handshake bech32 address).';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.textContent = '⏳ Initiating Transfer…';
+
+  try {
+    const resp = await fetch(`/api/wallet/${activeWalletId}/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: transferCurrentName,
+        address: recipient
+      })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const el = document.getElementById('transfer-success');
+      el.innerHTML = `✓ Transfer initiated!<br>
+        txid: <span style="font-size:0.7rem">${data.txid.substring(0,20)}…</span><br>
+        FINALIZE will be sent automatically after block ${data.finalizeAfterHeight}.`;
+      el.classList.remove('hidden');
+      btn.textContent = '✓ Transfer Sent';
+      btn.style.opacity = '0.4';
+      document.getElementById('transfer-form-section').style.display = 'none';
+      // Refresh names list after 2 seconds then close
+      setTimeout(() => {
+        loadNames(activeWalletId);
+        hideTransferModal();
+      }, 3000);
+    } else {
+      throw new Error(data.error || 'Unknown error');
+    }
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.textContent = 'Initiate Transfer';
+  }
+}
 function nameHistory(name)  { alert('History for .' + name + ' — coming soon'); }
 
 // ── DNS Management ────────────────────────────────────────────────────────────
@@ -665,13 +761,15 @@ async function submitDnsUpdate() {
 
   if (dnsRecords.length === 0) {
     const el = document.getElementById('dns-error');
-    el.textContent = 'Add at least one record before saving.';
+    el.textContent = 'Stage at least one record before publishing.';
     el.classList.remove('hidden');
     return;
   }
 
+  // Disable immediately to prevent double-submit
   btn.disabled = true;
-  btn.textContent = 'Publishing…';
+  btn.style.opacity = '0.6';
+  btn.textContent = '⏳ Publishing…';
 
   try {
     const resp = await fetch(`/api/wallet/${activeWalletId}/update-dns`, {
@@ -684,11 +782,15 @@ async function submitDnsUpdate() {
     });
     const data = await resp.json();
     if (data.ok) {
+      // Show success, grey out button permanently
       const el = document.getElementById('dns-success');
       el.textContent = `✓ Published! txid: ${data.txid.substring(0,16)}… — records take effect after ~36 blocks`;
       el.classList.remove('hidden');
-      btn.textContent = 'Publish to Blockchain';
-      btn.disabled = false;
+      btn.textContent = '✓ Published';
+      btn.style.opacity = '0.4';
+      btn.disabled = true;
+      // Auto-close after 3 seconds
+      setTimeout(() => hideDnsModal(), 3000);
     } else {
       throw new Error(data.error || 'Unknown error');
     }
@@ -696,8 +798,10 @@ async function submitDnsUpdate() {
     const el = document.getElementById('dns-error');
     el.textContent = e.message;
     el.classList.remove('hidden');
-    btn.textContent = 'Publish to Blockchain';
+    // Re-enable on error so user can retry
     btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.textContent = 'Publish to Blockchain';
   }
 }
 

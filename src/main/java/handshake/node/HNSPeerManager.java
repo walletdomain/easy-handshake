@@ -54,7 +54,7 @@ public class HNSPeerManager {
     // Used to decode brontide public keys from seed entries.
     // -------------------------------------------------------------------------
 
-    private static byte[] base32Decode(String input) {
+    static byte[] base32Decode(String input) {
         String alphabet = "abcdefghijklmnopqrstuvwxyz234567";
         int[] lookup = new int[128];
         Arrays.fill(lookup, -1);
@@ -193,8 +193,70 @@ public class HNSPeerManager {
     }
 
     // -------------------------------------------------------------------------
-    // Select the fastest authenticated peer
+    // Cleartext peer connection (port 12038)
     // -------------------------------------------------------------------------
+
+    /**
+     * Connects to a peer via cleartext P2P on port 12038.
+     * No brontide handshake — just TCP + VERSION/VERACK.
+     * Lower trust than brontide but expands our peer pool significantly.
+     */
+    static HNSCleartextPeer connectCleartext(String ip) {
+        if (PeerScorecard.get().shouldSkip(ip)) return null;
+        Socket socket = new Socket();
+        try {
+            socket.connect(
+                    new InetSocketAddress(ip, HNSCleartextPeer.CLEARTEXT_PORT),
+                    CONNECT_TIMEOUT);
+            socket.setSoTimeout(CONNECT_TIMEOUT);
+            HNSCleartextPeer peer = new HNSCleartextPeer(
+                    new Seed("", ip, HNSCleartextPeer.CLEARTEXT_PORT), socket);
+            peer.handshake();
+            return peer;
+        } catch (Exception e) {
+            PeerScorecard.get().recordFailure(ip, "cleartext:" + e.getClass().getSimpleName());
+            try { socket.close(); } catch (Exception ignored) {}
+            return null;
+        }
+    }
+
+    /**
+     * Discovers cleartext peers by attempting port 12038 connections
+     * to all known peer IPs that don't have brontide keys.
+     */
+    public static List<HNSCleartextPeer> discoverCleartextPeers() throws InterruptedException {
+        List<String> ips = new ArrayList<>();
+        for (PeerScorecard.PeerRecord r : PeerScorecard.get().getAllRecords()) {
+            if (!r.isBlacklisted()) ips.add(r.ip);
+        }
+        // Also try known IPs from discovery that may not have brontide keys
+        for (Seed s : PeerDiscovery.get().getAllPeers()) {
+            if (!ips.contains(s.ipAddress())) ips.add(s.ipAddress());
+        }
+
+        List<Future<HNSCleartextPeer>> futures = new ArrayList<>();
+        try (ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(ips.size(), POLL_THREADS * 2))) {
+            for (String ip : ips)
+                futures.add(executor.submit(() -> connectCleartext(ip)));
+            executor.shutdown();
+            executor.awaitTermination(CONNECT_TIMEOUT + 2000L, TimeUnit.MILLISECONDS);
+        }
+
+        List<HNSCleartextPeer> peers = new ArrayList<>();
+        for (Future<HNSCleartextPeer> f : futures) {
+            try {
+                HNSCleartextPeer p = f.get();
+                if (p != null) {
+                    peers.add(p);
+                    System.out.printf("  [%s] cleartext OK%n", p.getSeed().ipAddress());
+                }
+            } catch (Exception ignored) {}
+        }
+        System.out.printf("[HNSPeerManager] Cleartext peers: %d/%d connected%n",
+                peers.size(), ips.size());
+        return peers;
+    }
 
     @SuppressWarnings("unused") // called by ChainFollower
     public static Peer selectBestPeer(List<Peer> peers) {
@@ -248,35 +310,11 @@ public class HNSPeerManager {
 
             System.out.println("\nFull sync complete. Database: " + DB_PATH_CHAIN);
 
-            // ── Phase 2b: Peer discovery ──────────────────────────────────
-            // Query all seeds for their known peers — runs in background
-            // so it doesn't delay startup
-            Thread discoveryThread = new Thread(() -> {
-                try {
-                    List<Peer> peers = discoverPeers();
-                    int total = 0;
-                    for (Peer p : peers) {
-                        try {
-                            HNSPeer hnsPeer = new HNSPeer(p, p.brontide);
-                            hnsPeer.handshake();
-                            hnsPeer.sendSendHeaders();
-                            Thread.sleep(300); // let peer settle before GETADDR
-                            int found = PeerDiscovery.get()
-                                    .discoverFrom(hnsPeer, p.seed.ipAddress());
-                            total += found;
-                            p.socket.close();
-                        } catch (Exception ignored) {}
-                    }
-                    if (total > 0)
-                        System.out.printf("[PeerDiscovery] Initial discovery "
-                                + "complete — %d new peers found.%n", total);
-                } catch (Exception e) {
-                    System.out.println("[PeerDiscovery] Discovery error: "
-                            + e.getMessage());
-                }
-            }, "peer-discovery");
-            discoveryThread.setDaemon(true);
-            discoveryThread.start();
+            // ── Phase 2b: Peer crawler ────────────────────────────────────
+            // Crawls the network via GETADDR/ADDR to discover peers on
+            // both brontide (44806) and cleartext (12038) ports.
+            // Runs immediately then every 30 minutes in background.
+            PeerCrawler.get().start();
 
             // ── Phase 3: Run as peer node ─────────────────────────────────
             // Accept inbound connections from other Handshake nodes

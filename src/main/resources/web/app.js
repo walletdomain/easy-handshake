@@ -231,22 +231,33 @@ function renderPeers(peers) {
     return;
   }
 
-  // Sort: healthy first, then degraded, then backoff
+  // Sort: score descending, height as tiebreaker, backoff always last
   peers.sort((a, b) => {
-    const rank = p => p.backoff ? 2 : p.score >= 40 ? 0 : 1;
-    const dr = rank(a) - rank(b);
-    return dr !== 0 ? dr : b.score - a.score;
+    if (a.backoff !== b.backoff) return a.backoff ? 1 : -1;
+    if (b.score !== a.score) return b.score - a.score;
+    // Same score — prefer peers with known height
+    const aHasHeight = a.height > 0, bHasHeight = b.height > 0;
+    if (aHasHeight !== bHasHeight) return aHasHeight ? -1 : 1;
+    return b.height - a.height;
   });
 
   panel.innerHTML = peers.map(p => {
-    const cls    = p.backoff ? 'backoff' : p.score >= 40 ? 'healthy' : 'degraded';
-    const agent  = (p.version || '').replace('/hsd:', 'hsd ').replace(/\//g, '');
-    const height = p.height > 0 ? 'h=' + p.height.toLocaleString() : '—';
+    const cls      = p.backoff ? 'backoff' : p.score >= 40 ? 'healthy' : 'degraded';
+    const rawAgent = (p.version || '').replace('/hsd:', 'hsd ').replace(/\//g, '').trim();
+    const agent    = rawAgent || '—';
+    const height   = p.height > 0 ? 'h=' + p.height.toLocaleString() : '—';
     const backoffTag = p.backoff
         ? '<span class="peer-backoff-tag">BACKOFF</span>' : '';
+    const hasBrontide = p.key && p.key.length > 0;
+    const encTag = hasBrontide
+        ? `<span title="This node uses end-to-end encryption (brontide) for all P2P communication."
+                style="cursor:help;font-size:0.75rem;margin-left:0.2rem;opacity:0.7">🔑</span>`
+        : `<span title="Cleartext connection (port 12038) — no encryption"
+                style="cursor:help;font-size:0.7rem;margin-left:0.2rem;opacity:0.4">🔓</span>`;
     return `<div class="peer-row">
       <span class="peer-dot ${cls}"></span>
       <span class="peer-ip">${escHtml(p.ip)}</span>
+      ${encTag}
       <span class="peer-agent">${escHtml(agent)}</span>
       <span class="peer-height">${height}</span>
       <span class="peer-score ${cls}">${p.score}</span>

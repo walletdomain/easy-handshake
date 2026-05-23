@@ -1373,14 +1373,15 @@ public class NodeHttpServer {
                 sb.append(String.format(
                         "{\"ip\":\"%s\",\"score\":%d,\"status\":\"%s\","
                                 + "\"ok\":%d,\"fail\":%d,\"inv\":%d,\"height\":%d,"
-                                + "\"version\":\"%s\",\"backoff\":%b}",
+                                + "\"version\":\"%s\",\"backoff\":%b,\"key\":\"%s\"}",
                         ip, score, status,
                         r != null ? r.successCount : 0,
                         r != null ? r.failureCount : 0,
                         r != null ? r.invalidBlockCount : 0,
                         height,
                         agent.replace("\"",""),
-                        backoff));
+                        backoff,
+                        s.key() != null ? s.key() : ""));
                 first = false;
             }
 
@@ -1391,7 +1392,7 @@ public class NodeHttpServer {
                     sb.append(String.format(
                             "{\"ip\":\"%s\",\"score\":%d,\"status\":\"%s\","
                                     + "\"ok\":%d,\"fail\":%d,\"inv\":%d,\"height\":%d,"
-                                    + "\"version\":\"%s\",\"backoff\":%b}",
+                                    + "\"version\":\"%s\",\"backoff\":%b,\"key\":\"\"}",
                             r.ip, r.score, r.status(),
                             r.successCount, r.failureCount, r.invalidBlockCount,
                             r.lastKnownHeight,

@@ -3,7 +3,9 @@ package handshake.node;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * Handshake P2P message framing.
@@ -376,6 +378,79 @@ public class HNSMessage {
     }
 
     // -------------------------------------------------------------------------
+    /**
+     * Parses an ADDR message payload into a list of discovered peers.
+     * Each NetAddress is 88 bytes:
+     *   time(8) + services(4) + hi_svc(4) + type(1) + raw[16]
+     *   + reserved[20] + port(2 LE) + key[33]
+     *
+     * @return list of [ip, port, keyHex] arrays
+     */
+    public static List<String[]> parseAddr(byte[] payload) {
+        List<String[]> peers = new ArrayList<>();
+        if (payload == null || payload.length < 1) return peers;
+        int pos = 0;
+
+        // Read varint count
+        int count = payload[pos++] & 0xFF;
+        if (count == 0xFD) {
+            count = (payload[pos] & 0xFF) | ((payload[pos+1] & 0xFF) << 8);
+            pos += 2;
+        } else if (count == 0xFE || count == 0xFF) {
+            return peers; // too large, skip
+        }
+
+        for (int i = 0; i < count && pos + 88 <= payload.length; i++) {
+            // time(8) + services(4) + hi_svc(4) = 16 bytes
+            pos += 16;
+            // type(1)
+            int type = payload[pos++] & 0xFF;
+            // raw[16] — IPv4-mapped is last 4 bytes
+            byte[] raw = Arrays.copyOfRange(payload, pos, pos + 16);
+            pos += 16;
+            // reserved[20]
+            pos += 20;
+            // port(2 LE)
+            int port = (payload[pos] & 0xFF) | ((payload[pos+1] & 0xFF) << 8);
+            pos += 2;
+            // key[33]
+            byte[] key = Arrays.copyOfRange(payload, pos, pos + 33);
+            pos += 33;
+
+            // Extract IPv4 address from raw bytes
+            // IPv4-mapped: 10 zeros + FF FF + 4 IPv4 bytes
+            String ip = null;
+            if (type == 0) {
+                // IPv4-mapped IPv6: last 4 bytes are the IPv4 address
+                ip = String.format("%d.%d.%d.%d",
+                        raw[12] & 0xFF, raw[13] & 0xFF,
+                        raw[14] & 0xFF, raw[15] & 0xFF);
+            }
+            // Skip if invalid or loopback/private
+            if (ip == null || ip.startsWith("0.") || ip.startsWith("127.")
+                    || ip.startsWith("10.") || ip.startsWith("192.168.")
+                    || ip.equals("0.0.0.0")) continue;
+
+            // Check if key is non-zero (brontide peer)
+            boolean hasKey = false;
+            for (byte b : key) if (b != 0) { hasKey = true; break; }
+
+            String keyHex = hasKey ? toHex(key) : "";
+            peers.add(new String[]{ ip,
+                    String.valueOf(port > 0 ? port : CLEARTEXT_PORT),
+                    keyHex });
+        }
+        return peers;
+    }
+
+    private static final int CLEARTEXT_PORT = 12038;
+
+    private static String toHex(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
     // NetAddress helper
     // -------------------------------------------------------------------------
 

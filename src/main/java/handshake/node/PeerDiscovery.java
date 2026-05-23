@@ -133,6 +133,18 @@ public class PeerDiscovery {
         return sb.toString();
     }
 
+    /**
+     * Adds a cleartext-only peer (no brontide key) discovered via ADDR messages
+     * or other means. These peers are only reachable on port 12038.
+     */
+    public void addCleartextPeer(String ip) {
+        if (ip == null || ip.isBlank()) return;
+        if (isKnownSeed(ip)) return;
+        if (discovered.containsKey(ip)) return;
+        Seed s = new Seed("", ip, HNSCleartextPeer.CLEARTEXT_PORT);
+        discovered.put(ip, s);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private boolean isKnownSeed(String ip) {

@@ -474,6 +474,67 @@
   </div>
 </div>
 
+<!-- Transfer Name Modal -->
+<div class="modal-overlay hidden" id="transfer-modal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">Transfer Name</div>
+    <div class="modal-sub">
+      Transferring <strong id="transfer-modal-name"></strong> is a two-step process:
+    </div>
+
+    <!-- Step indicators -->
+    <div style="display:flex;gap:0.5rem;margin:0.75rem 0 1rem;font-size:0.65rem;
+                  font-family:'Space Mono',monospace">
+      <div style="flex:1;padding:0.5rem 0.6rem;border-radius:4px;
+                    background:rgba(var(--accent-rgb,100,200,150),0.08);
+                    border:1px solid rgba(var(--accent-rgb,100,200,150),0.2)">
+        <div style="color:var(--accent);margin-bottom:0.2rem">STEP 1 — NOW</div>
+        <div style="color:var(--muted)">TRANSFER transaction<br>broadcasts your intent</div>
+      </div>
+      <div style="display:flex;align-items:center;color:var(--muted);font-size:0.8rem">→</div>
+      <div style="flex:1;padding:0.5rem 0.6rem;border-radius:4px;
+                    background:rgba(240,160,48,0.06);
+                    border:1px solid rgba(240,160,48,0.2)">
+        <div style="color:#f0a030;margin-bottom:0.2rem">STEP 2 — AUTO</div>
+        <div style="color:var(--muted)">FINALIZE after ~288 blocks (~2 days) — sent automatically</div>
+      </div>
+    </div>
+
+    <!-- Form section -->
+    <div id="transfer-form-section">
+      <div class="dns-label">RECIPIENT ADDRESS</div>
+      <input class="modal-input" id="transfer-recipient"
+             placeholder="hs1q…"
+             autocomplete="off" autocorrect="off" spellcheck="false"
+             onkeydown="if(event.key==='Enter') submitTransfer()">
+      <div style="font-size:0.68rem;color:var(--muted);margin-top:0.4rem">
+        ⚠ Double-check this address. Transfers cannot be reversed once finalized.
+      </div>
+    </div>
+
+    <!-- Status section (shown when already transferring) -->
+    <div id="transfer-status-section" style="display:none;padding:0.75rem;
+           border-radius:6px;background:rgba(240,160,48,0.06);
+           border:1px solid rgba(240,160,48,0.2);
+           font-size:0.78rem;color:#f0a030;font-family:'Space Mono',monospace">
+      <span id="transfer-status-msg"></span>
+    </div>
+
+    <div class="modal-error hidden" id="transfer-error"></div>
+    <div id="transfer-success" class="hidden"
+         style="margin-top:0.75rem;padding:0.6rem 0.75rem;border-radius:4px;
+                  background:rgba(0,200,100,0.08);border:1px solid rgba(0,200,100,0.25);
+                  color:#4caf80;font-size:0.75rem;font-family:'Space Mono',monospace;
+                  line-height:1.6"></div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideTransferModal()">Cancel</button>
+      <button class="btn-primary" id="transfer-submit-btn"
+              onclick="submitTransfer()">Initiate Transfer</button>
+    </div>
+  </div>
+</div>
+
 <!-- DNS Management Modal -->
 <div class="modal-overlay hidden" id="dns-modal">
   <div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">

@@ -353,8 +353,11 @@ footer {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
+  overflow-y: auto;
+  max-height: 420px;
   margin-bottom: 1rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .peer-row {

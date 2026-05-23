@@ -66,8 +66,8 @@ public class HNSBroadcaster {
             HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
-            conn.setConnectTimeout(8_000);
-            conn.setReadTimeout(8_000);
+            conn.setConnectTimeout(3_000);
+            conn.setReadTimeout(3_000);
 
             if (apiKey != null) {
                 String creds = "x:" + apiKey;
@@ -158,10 +158,39 @@ public class HNSBroadcaster {
         }
 
         boolean ok = relayOk || successes >= MIN_SUCCESS_PEERS;
-        System.out.printf("[HNSBroadcaster] Broadcast %s — relay=%s p2p=%d/%d%n",
+
+        // Also broadcast to cleartext peers on port 12038
+        int cleartextSuccesses = 0;
+        try {
+            List<handshake.node.HNSCleartextPeer> ctPeers =
+                    handshake.node.HNSPeerManager.discoverCleartextPeers();
+            byte[] txidBytes = computeTxid(tx.raw);
+            List<handshake.node.HNSCleartextPeer> ctTargets =
+                    ctPeers.subList(0, Math.min(MAX_BROADCAST_PEERS, ctPeers.size()));
+            for (handshake.node.HNSCleartextPeer ctPeer : ctTargets) {
+                try {
+                    boolean sent = ctPeer.broadcastTx(txidBytes, tx.raw, 5_000);
+                    if (sent) {
+                        cleartextSuccesses++;
+                        System.out.printf("[Broadcaster] [%s:12038] TX sent via cleartext%n",
+                                ctPeer.getSeed().ipAddress());
+                    }
+                } catch (Exception e) {
+                    System.out.printf("[Broadcaster] [%s:12038] failed: %s%n",
+                            ctPeer.getSeed().ipAddress(), e.getMessage());
+                } finally {
+                    ctPeer.close();
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        ok = ok || cleartextSuccesses > 0;
+        System.out.printf("[HNSBroadcaster] Broadcast %s — relay=%s brontide=%d/%d cleartext=%d%n",
                 ok ? "SUCCESS" : "FAILED",
                 relayOk ? "OK" : "NO",
-                successes, targets.size());
+                successes, targets.size(), cleartextSuccesses);
 
         return new BroadcastResult(ok, successes, targets.size(), results, tx.txid);
     }
