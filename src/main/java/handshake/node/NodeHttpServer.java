@@ -581,6 +581,10 @@ public class NodeHttpServer {
                 } else if (path.endsWith("/send") && method.equals("POST")) {
                     String id = extractWalletId(path, "/send");
                     handleSend(exchange, id, body);
+                    // POST /api/wallet/{id}/watch-transfer
+                } else if (path.endsWith("/watch-transfer") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/watch-transfer");
+                    handleWatchTransfer(exchange, id, body);
                     // POST /api/wallet/{id}/transfer
                 } else if (path.endsWith("/transfer") && method.equals("POST")) {
                     String id = extractWalletId(path, "/transfer");
@@ -667,6 +671,82 @@ public class NodeHttpServer {
             }
             sb.append("]}");
             sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleWatchTransfer(com.sun.net.httpserver.HttpExchange ex,
+                                         String walletId, String body) throws Exception {
+            String name             = extractJsonString(body, "name");
+            String transferTxid     = extractJsonString(body, "transferTxid");
+            String recipientAddr    = extractJsonString(body, "recipientAddress");
+            String confirmHeightStr = extractJsonString(body, "confirmHeight");
+
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("name is required");
+            if (transferTxid == null || transferTxid.isBlank())
+                throw new IllegalArgumentException("transferTxid is required");
+            if (recipientAddr == null || recipientAddr.isBlank())
+                throw new IllegalArgumentException("recipientAddress is required");
+
+            // Wallet must be unlocked to derive keys
+            handshake.wallet.BIP32.HDKey master = walletManager.getMasterKey(walletId);
+            if (master == null)
+                throw new IllegalStateException("Wallet locked — unlock first");
+
+            handshake.wallet.WalletDB walletDb = walletManager.getWalletDB();
+            handshake.wallet.WalletDB.NameRecord nameRec = walletDb.getName(name);
+            if (nameRec == null)
+                throw new IllegalArgumentException("Name '" + name + "' not found");
+
+            // Derive owner key
+            handshake.wallet.HNSSigner signer =
+                    new handshake.wallet.HNSSigner(walletManager, walletDb);
+            handshake.wallet.WalletDB.AddressRecord addrRec =
+                    signer.findAddressRecord(walletId, nameRec.ownerAddress);
+            if (addrRec == null)
+                throw new IllegalStateException(
+                        "Owner address not found: " + nameRec.ownerAddress);
+
+            handshake.wallet.BIP32.HDKey ownerKey = handshake.wallet.BIP32.deriveAddress(
+                    master, addrRec.account, addrRec.change, addrRec.index);
+
+            // Find a fee UTXO for the FINALIZE tx
+            java.util.List<handshake.wallet.WalletDB.UtxoRecord> spendable =
+                    signer.getSpendableUtxos(walletId);
+            if (spendable.isEmpty())
+                throw new IllegalStateException("No spendable UTXOs for fee");
+            spendable.sort((a, b) -> Long.compare(a.value, b.value));
+            handshake.wallet.HNSTxBuilder.UtxoInput feeInput =
+                    signer.buildInput(walletId, spendable.get(0), master);
+
+            // Calculate finalizeAfterHeight
+            int confirmHeight = confirmHeightStr != null
+                    ? Integer.parseInt(confirmHeightStr)
+                    : db.getTipHeight(); // fallback to current tip
+            int finalizeAfterHeight = confirmHeight + 288 + 5;
+
+            // Store all pending finalize data
+            nameRec.state               = "TRANSFERRING";
+            nameRec.recipientAddress    = recipientAddr;
+            nameRec.transferTxid        = transferTxid;
+            nameRec.finalizeAfterHeight = finalizeAfterHeight;
+            nameRec.ownerPrivKeyHex     = handshake.wallet.HNSTxBuilder.toHex(ownerKey.privateKey);
+            nameRec.ownerPubKeyHex      = handshake.wallet.HNSTxBuilder.toHex(ownerKey.publicKey);
+            nameRec.feePrevHash         = handshake.wallet.HNSTxBuilder.toHex(feeInput.prevHash);
+            nameRec.feePrevIndex        = feeInput.prevIndex;
+            nameRec.feeValue            = feeInput.value;
+            nameRec.feeAddrHash         = handshake.wallet.HNSTxBuilder.toHex(feeInput.addrHash);
+            nameRec.feePrivKeyHex       = handshake.wallet.HNSTxBuilder.toHex(feeInput.privateKey);
+            nameRec.feePubKeyHex        = handshake.wallet.HNSTxBuilder.toHex(feeInput.publicKey);
+            walletDb.saveName(nameRec);
+
+            System.out.printf("[API] Watch-transfer registered for .%s, finalize after block %d%n",
+                    name, finalizeAfterHeight);
+
+            sendJson(ex, 200, String.format(
+                    "{\"ok\":true,\"name\":\"%s\",\"transferTxid\":\"%s\"," +
+                            "\"finalizeAfterHeight\":%d," +
+                            "\"note\":\"FINALIZE will be sent automatically after block %d\"}",
+                    name, transferTxid, finalizeAfterHeight, finalizeAfterHeight));
         }
 
         private void handleTransfer(com.sun.net.httpserver.HttpExchange ex,
@@ -785,13 +865,37 @@ public class NodeHttpServer {
                     name, toAddr, tx.txid);
 
             // Broadcast
-            handshake.wallet.HNSBroadcaster.BroadcastResult result =
-                    handshake.wallet.HNSBroadcaster.broadcast(tx);
+            handshake.wallet.HNSBroadcaster.broadcast(tx);
+
+            // Store pending finalize data in NameRecord
+            // We need: recipient, owner keys, fee UTXO, finalizeAfterHeight
+            // finalizeAfterHeight = current tip + 288 (lockup period)
+            // We don't know exact confirm height yet so use tip + 288 + buffer
+            int tipHeight = db.getTipHeight();
+            nameRec.state               = "TRANSFERRING";
+            nameRec.recipientAddress    = toAddr;
+            nameRec.finalizeAfterHeight = tipHeight + 288 + 5; // +5 block buffer
+            nameRec.transferTxid        = tx.txid;
+            nameRec.ownerPrivKeyHex     = handshake.wallet.HNSTxBuilder.toHex(ownerKey.privateKey);
+            nameRec.ownerPubKeyHex      = handshake.wallet.HNSTxBuilder.toHex(ownerKey.publicKey);
+            // Store the fee UTXO details for use in FINALIZE tx
+            nameRec.feePrevHash         = handshake.wallet.HNSTxBuilder.toHex(feeInput.prevHash);
+            nameRec.feePrevIndex        = feeInput.prevIndex;
+            nameRec.feeValue            = feeInput.value;
+            nameRec.feeAddrHash         = handshake.wallet.HNSTxBuilder.toHex(feeInput.addrHash);
+            nameRec.feePrivKeyHex       = handshake.wallet.HNSTxBuilder.toHex(feeInput.privateKey);
+            nameRec.feePubKeyHex        = handshake.wallet.HNSTxBuilder.toHex(feeInput.publicKey);
+            walletDb.saveName(nameRec);
+
+            System.out.printf("[API] Pending FINALIZE stored for .%s, after block %d%n",
+                    name, nameRec.finalizeAfterHeight);
 
             sendJson(ex, 200, String.format(
                     "{\"ok\":true,\"txid\":\"%s\",\"fee\":%.6f," +
-                            "\"note\":\"Wait ~2 days (288 blocks) then finalize\"}",
-                    tx.txid, tx.fee / 1_000_000.0));
+                            "\"finalizeAfterHeight\":%d," +
+                            "\"note\":\"FINALIZE will be sent automatically after block %d\"}",
+                    tx.txid, tx.fee / 1_000_000.0,
+                    nameRec.finalizeAfterHeight, nameRec.finalizeAfterHeight));
         }
 
         private void handleSend(com.sun.net.httpserver.HttpExchange ex,

@@ -251,6 +251,18 @@ public class Config implements AutoCloseable {
         return get("relay.node.apikey", null);
     }
 
+    /**
+     * Whether to require manual user approval before sending FINALIZE.
+     * Default false = automatic FINALIZE after lockup period.
+     */
+    public boolean isTransferApprovalRequired() {
+        return getBool("wallet.transfer.requireApproval", false);
+    }
+
+    public void setTransferApprovalRequired(boolean required) {
+        set("wallet.transfer.requireApproval", String.valueOf(required));
+    }
+
     /** Sets a config value and persists immediately. */
     public void set(String key, String value) {
         settings.put(key, value);

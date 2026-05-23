@@ -161,32 +161,69 @@ public class WalletDB implements AutoCloseable {
         public String utxoTxHash;    // hex txid of current name UTXO
         public int    utxoIndex;     // output index of current name UTXO
         public int    claimHeight;   // original registration height (items[1])
-        public int    renewalCount;  // number of renewals (items[5] in FINALIZE)
+        public int    renewalCount;  // number of renewals
+        // Fields for automated FINALIZE:
+        public String recipientAddress;    // address transfer is going to
+        public int    finalizeAfterHeight; // block height when FINALIZE can be sent
+        public String transferTxid;        // txid of the TRANSFER transaction
+        // Signing keys needed for FINALIZE (stored temporarily while TRANSFERRING)
+        public String ownerPrivKeyHex;     // hex private key of owner (cleared after finalize)
+        public String ownerPubKeyHex;      // hex public key of owner
+        public String feePrevHash;         // fee UTXO for finalize tx
+        public int    feePrevIndex;
+        public long   feeValue;
+        public String feeAddrHash;         // hex
+        public String feePrivKeyHex;       // hex
+        public String feePubKeyHex;        // hex
 
         public String toStorage() {
             return walletId + "|" + ownerAddress + "|" + height + "|"
                     + expireHeight + "|" + lastRenewed + "|" + state + "|"
-                    + (nameHash != null ? nameHash : "") + "|"
-                    + (utxoTxHash != null ? utxoTxHash : "") + "|"
-                    + utxoIndex + "|" + claimHeight + "|" + renewalCount;
+                    + s(nameHash) + "|" + s(utxoTxHash) + "|" + utxoIndex + "|"
+                    + claimHeight + "|" + renewalCount + "|"
+                    + s(recipientAddress) + "|" + finalizeAfterHeight + "|"
+                    + s(transferTxid) + "|" + s(ownerPrivKeyHex) + "|"
+                    + s(ownerPubKeyHex) + "|" + s(feePrevHash) + "|"
+                    + feePrevIndex + "|" + feeValue + "|" + s(feeAddrHash) + "|"
+                    + s(feePrivKeyHex) + "|" + s(feePubKeyHex);
         }
 
+        private static String s(String v) { return v != null ? v : ""; }
+
         public static NameRecord fromStorage(String name, String s) {
-            String[] p = s.split("\\|", 11);
-            NameRecord r    = new NameRecord();
-            r.name          = name;
-            r.walletId      = p[0];
-            r.ownerAddress  = p[1];
-            r.height        = Integer.parseInt(p[2]);
-            r.expireHeight  = Integer.parseInt(p[3]);
-            r.lastRenewed   = Long.parseLong(p[4]);
-            r.state         = p[5];
-            r.nameHash      = p.length > 6  ? p[6]  : "";
-            r.utxoTxHash    = p.length > 7  ? p[7]  : "";
-            r.utxoIndex     = p.length > 8  ? Integer.parseInt(p[8])  : 0;
-            r.claimHeight   = p.length > 9  ? Integer.parseInt(p[9])  : r.height;
-            r.renewalCount  = p.length > 10 ? Integer.parseInt(p[10]) : 0;
+            String[] p = s.split("\\|", 22);
+            NameRecord r        = new NameRecord();
+            r.name              = name;
+            r.walletId          = p[0];
+            r.ownerAddress      = p[1];
+            r.height            = Integer.parseInt(p[2]);
+            r.expireHeight      = Integer.parseInt(p[3]);
+            r.lastRenewed       = Long.parseLong(p[4]);
+            r.state             = p[5];
+            r.nameHash          = p.length > 6  ? p[6]  : "";
+            r.utxoTxHash        = p.length > 7  ? p[7]  : "";
+            r.utxoIndex         = p.length > 8  ? parseInt(p[8])  : 0;
+            r.claimHeight       = p.length > 9  ? parseInt(p[9])  : r.height;
+            r.renewalCount      = p.length > 10 ? parseInt(p[10]) : 0;
+            r.recipientAddress  = p.length > 11 ? p[11] : "";
+            r.finalizeAfterHeight = p.length > 12 ? parseInt(p[12]) : 0;
+            r.transferTxid      = p.length > 13 ? p[13] : "";
+            r.ownerPrivKeyHex   = p.length > 14 ? p[14] : "";
+            r.ownerPubKeyHex    = p.length > 15 ? p[15] : "";
+            r.feePrevHash       = p.length > 16 ? p[16] : "";
+            r.feePrevIndex      = p.length > 17 ? parseInt(p[17]) : 0;
+            r.feeValue          = p.length > 18 ? parseLong(p[18]) : 0;
+            r.feeAddrHash       = p.length > 19 ? p[19] : "";
+            r.feePrivKeyHex     = p.length > 20 ? p[20] : "";
+            r.feePubKeyHex      = p.length > 21 ? p[21] : "";
             return r;
+        }
+
+        private static int parseInt(String s) {
+            try { return Integer.parseInt(s); } catch (Exception e) { return 0; }
+        }
+        private static long parseLong(String s) {
+            try { return Long.parseLong(s); } catch (Exception e) { return 0; }
         }
 
         /** Returns blocks until expiry. Negative if already expired. */

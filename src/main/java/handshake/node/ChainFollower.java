@@ -171,6 +171,9 @@ public class ChainFollower {
                             dnsServer.applyNewBlock(block);
                         if (walletScanner != null)
                             walletScanner.applyNewBlock(block, h);
+                        // Check for pending FINALIZE transactions
+                        if (walletManager != null)
+                            checkPendingFinalizations(h, header.hash());
                         EventBus.get().block("Block " + h + " validated ✓ ("
                                 + block.txs.size() + " txs)");
                     } catch (SecurityException e) {
@@ -246,5 +249,123 @@ public class ChainFollower {
                     + e.getMessage());
             return null;
         }
+    }
+
+    // ── Auto-finalize pending transfers ───────────────────────────────────────
+
+    /**
+     * Checks all wallets for pending FINALIZE transactions.
+     * Called on every new block. When a TRANSFER lockup period expires,
+     * automatically builds and broadcasts FINALIZE (unless manual approval required).
+     */
+    private void checkPendingFinalizations(int height, byte[] blockHash) {
+        if (walletManager == null) return;
+        Config cfg = Config.get();
+        boolean requireApproval = cfg.isTransferApprovalRequired();
+
+        handshake.wallet.WalletDB walletDb = walletManager.getWalletDB();
+
+        for (handshake.wallet.WalletDB.WalletRecord wallet :
+                walletManager.getAllWallets()) {
+            for (handshake.wallet.WalletDB.NameRecord nameRec :
+                    walletDb.getNamesForWallet(wallet.id)) {
+
+                if (!"TRANSFERRING".equals(nameRec.state)) continue;
+                if (nameRec.finalizeAfterHeight <= 0) continue;
+                if (height < nameRec.finalizeAfterHeight) continue;
+                if (nameRec.recipientAddress == null
+                        || nameRec.recipientAddress.isEmpty()) continue;
+                if (nameRec.ownerPrivKeyHex == null
+                        || nameRec.ownerPrivKeyHex.isEmpty()) continue;
+
+                System.out.printf("[ChainFollower] TRANSFER lockup expired for .%s at height %d%n",
+                        nameRec.name, height);
+
+                if (requireApproval) {
+                    // Mark as ready to finalize — UI will show Finalize button
+                    nameRec.state = "READY_TO_FINALIZE";
+                    walletDb.saveName(nameRec);
+                    System.out.printf("[ChainFollower] Manual approval required for .%s%n",
+                            nameRec.name);
+                    EventBus.get().name("." + nameRec.name
+                            + " is ready to finalize — click Finalize in wallet");
+                    continue;
+                }
+
+                // Auto-finalize
+                try {
+                    sendFinalize(nameRec, height, blockHash, walletDb);
+                } catch (Exception e) {
+                    System.out.printf("[ChainFollower] Auto-finalize failed for .%s: %s%n",
+                            nameRec.name, e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void sendFinalize(handshake.wallet.WalletDB.NameRecord nameRec,
+                              int height, byte[] blockHash,
+                              handshake.wallet.WalletDB walletDb) throws Exception {
+        // Find the TRANSFER UTXO — it was created by the TRANSFER tx
+        // The TRANSFER tx output index for the name is 0
+        byte[] namePrevHash = fromHex(nameRec.transferTxid);
+        if (namePrevHash == null || namePrevHash.length != 32) {
+            System.out.printf("[ChainFollower] No transferTxid for .%s%n", nameRec.name);
+            return;
+        }
+
+        // The name UTXO value is preserved through TRANSFER
+        // Find it from the UTXO records
+        long nameValue = 0;
+        for (handshake.wallet.WalletDB.UtxoRecord u :
+                walletDb.getAllUtxosForAddress(nameRec.ownerAddress)) {
+            if (u.txHash.equals(nameRec.transferTxid) && u.outputIndex == 0) {
+                nameValue = u.value;
+                break;
+            }
+        }
+        if (nameValue == 0) {
+            // Use stored value from original name UTXO as fallback
+            for (handshake.wallet.WalletDB.UtxoRecord u :
+                    walletDb.getAllUtxosForAddress(nameRec.ownerAddress)) {
+                if (u.txHash.equals(nameRec.utxoTxHash)
+                        && u.outputIndex == nameRec.utxoIndex) {
+                    nameValue = u.value;
+                    break;
+                }
+            }
+        }
+
+        System.out.printf("[ChainFollower] Building FINALIZE for .%s nameValue=%d blockHash=%s%n",
+                nameRec.name, nameValue,
+                handshake.wallet.HNSTxBuilder.toHex(blockHash).substring(0, 16));
+
+        handshake.wallet.HNSTxBuilder.SignedTx tx =
+                handshake.wallet.HNSTransferBuilder.buildFinalize(
+                        nameRec, namePrevHash, 0, nameValue, blockHash);
+
+        handshake.wallet.HNSBroadcaster.broadcast(tx);
+
+        // Update name record — clear sensitive key data, update state
+        nameRec.state           = "FINALIZED";
+        nameRec.transferTxid    = tx.txid;
+        nameRec.ownerPrivKeyHex = ""; // clear private key
+        nameRec.feePrivKeyHex   = ""; // clear private key
+        walletDb.saveName(nameRec);
+
+        System.out.printf("[ChainFollower] FINALIZE broadcast for .%s txid=%s%n",
+                nameRec.name, tx.txid);
+        EventBus.get().name("." + nameRec.name + " transfer finalized → "
+                + nameRec.recipientAddress.substring(0, 12) + "...");
+    }
+
+    private static byte[] fromHex(String hex) {
+        if (hex == null || hex.length() < 2) return null;
+        try {
+            byte[] b = new byte[hex.length() / 2];
+            for (int i = 0; i < b.length; i++)
+                b[i] = (byte) Integer.parseInt(hex.substring(i*2, i*2+2), 16);
+            return b;
+        } catch (Exception e) { return null; }
     }
 }

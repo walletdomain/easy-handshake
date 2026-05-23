@@ -1,5 +1,6 @@
 package handshake.wallet;
 
+import handshake.node.HNSPeer.Blake2b;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -238,6 +239,158 @@ public class HNSTransferBuilder {
         writeVarBytes(bos, new byte[]{ version });
         writeVarBytes(bos, recipientHash);
         return bos.toByteArray();
+    }
+
+    /**
+     * Builds and signs a FINALIZE covenant transaction.
+     * Called automatically by ChainFollower when finalizeAfterHeight is reached.
+     *
+     * @param nameRecord    the NameRecord with pending finalize data
+     * @param nameUtxoHash  txid of the TRANSFER UTXO (output of TRANSFER tx)
+     * @param nameUtxoIndex output index of the TRANSFER UTXO
+     * @param nameValue     dollarydoos locked in the name
+     * @param blockHash     a recent block hash (from around current height)
+     */
+    public static HNSTxBuilder.SignedTx buildFinalize(
+            WalletDB.NameRecord nameRecord,
+            byte[] nameUtxoHash,
+            int    nameUtxoIndex,
+            long   nameValue,
+            byte[] blockHash) throws IOException {
+
+        byte[] nameHash       = fromHex(nameRecord.nameHash);
+        byte[] heightBytes    = toLE32(nameRecord.claimHeight);
+        byte[] nameBytes      = nameRecord.name.getBytes(
+                java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] recipientHash  = HNSAddress.decode(nameRecord.recipientAddress);
+        byte[] renewalBytes   = toLE32(nameRecord.renewalCount);
+
+        // Restore owner keys
+        byte[] ownerPrivKey   = fromHex(nameRecord.ownerPrivKeyHex);
+        byte[] ownerPubKey    = fromHex(nameRecord.ownerPubKeyHex);
+
+        // Restore fee UTXO
+        byte[] feePrevHash    = fromHex(nameRecord.feePrevHash);
+        byte[] feeAddrHash    = fromHex(nameRecord.feeAddrHash);
+        byte[] feePrivKey     = fromHex(nameRecord.feePrivKeyHex);
+        byte[] feePubKey      = fromHex(nameRecord.feePubKeyHex);
+
+        // Build FINALIZE covenant
+        byte[] finalizeCovenant = buildFinalizeCovenant(
+                nameHash, heightBytes, nameBytes, (byte) 0,
+                heightBytes,    // claimHeight = same as registration height
+                renewalBytes, blockHash);
+
+        // Fee
+        long fee    = HNSTxBuilder.MIN_RELAY_FEE;
+        long change = nameRecord.feeValue - fee;
+
+        // Build and sign
+        byte[] rawTx = buildFinalizeTx(
+                nameUtxoHash, nameUtxoIndex, nameValue,
+                recipientHash, finalizeCovenant,
+                feePrevHash, nameRecord.feePrevIndex,
+                nameRecord.feeValue, feeAddrHash, change,
+                ownerPrivKey, ownerPubKey,
+                feePrivKey, feePubKey);
+
+        // Compute txid
+        handshake.node.HNSBlock.Tx parsed =
+                handshake.node.HNSBlock.Tx.parse(rawTx, 0);
+        byte[] base = Arrays.copyOf(rawTx, parsed.baseSize);
+        byte[] txidRaw = HNSTxBuilder.blake256(base);
+        HNSTxBuilder.reverseInPlace(txidRaw);
+        String txid = HNSTxBuilder.toHex(txidRaw);
+
+        System.out.printf("[Finalize] Built FINALIZE tx for .%s txid=%s%n",
+                nameRecord.name, txid);
+        return new HNSTxBuilder.SignedTx(rawTx, txid, fee);
+    }
+
+    private static byte[] buildFinalizeTx(
+            byte[] namePrevHash, int nameOutIdx, long nameValue,
+            byte[] recipientAddrHash, byte[] finalizeCovenant,
+            byte[] feePrevHash, int feePrevIdx, long feeValue,
+            byte[] feeAddrHash, long change,
+            byte[] ownerPrivKey, byte[] ownerPubKey,
+            byte[] feePrivKey, byte[] feePubKey) throws IOException {
+
+        // hashPrevouts
+        ByteArrayOutputStream prevoutsBuf = new ByteArrayOutputStream();
+        prevoutsBuf.write(namePrevHash);
+        writeU32LE(prevoutsBuf, nameOutIdx);
+        prevoutsBuf.write(feePrevHash);
+        writeU32LE(prevoutsBuf, feePrevIdx);
+        byte[] hashPrevouts = HNSTxBuilder.blake256(prevoutsBuf.toByteArray());
+
+        // hashSequence
+        ByteArrayOutputStream seqBuf = new ByteArrayOutputStream();
+        writeU32LE(seqBuf, HNSTxBuilder.SEQUENCE);
+        writeU32LE(seqBuf, HNSTxBuilder.SEQUENCE);
+        byte[] hashSequence = HNSTxBuilder.blake256(seqBuf.toByteArray());
+
+        // hashOutputs
+        ByteArrayOutputStream outsBuf = new ByteArrayOutputStream();
+        serializeNameOutput(outsBuf, nameValue, recipientAddrHash, finalizeCovenant);
+        serializeSimpleOutput(outsBuf, change, feeAddrHash);
+        byte[] hashOutputs = HNSTxBuilder.blake256(outsBuf.toByteArray());
+
+        // Sign input 0: name UTXO (owned by sender's address)
+        // For FINALIZE, the input comes from the TRANSFER output which has
+        // the SENDER's address — so we sign with owner's key
+        byte[] preimage0 = buildSighashPreimage(
+                hashPrevouts, hashSequence, namePrevHash, nameOutIdx,
+                // The TRANSFER output address is the sender's address
+                // We need to decode it — it's stored in nameRecord.ownerAddress
+                // but we don't have it here. Use ownerPubKey to derive addrHash.
+                blake2b160(ownerPubKey),
+                nameValue, hashOutputs);
+        byte[] hash0 = HNSTxBuilder.blake256(preimage0);
+        byte[] sig0Raw = Secp256k1.signCompact(ownerPrivKey, hash0);
+        byte[] sig0 = Arrays.copyOf(sig0Raw, 65);
+        sig0[64] = (byte) HNSTxBuilder.SIGHASH_ALL;
+
+        // Sign input 1: fee UTXO
+        byte[] preimage1 = buildSighashPreimage(
+                hashPrevouts, hashSequence, feePrevHash, feePrevIdx,
+                feeAddrHash, feeValue, hashOutputs);
+        byte[] hash1 = HNSTxBuilder.blake256(preimage1);
+        byte[] sig1Raw = Secp256k1.signCompact(feePrivKey, hash1);
+        byte[] sig1 = Arrays.copyOf(sig1Raw, 65);
+        sig1[64] = (byte) HNSTxBuilder.SIGHASH_ALL;
+
+        // Serialize
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        writeU32LE(bos, HNSTxBuilder.VERSION);
+
+        HNSTxBuilder.writeVarInt(bos, 2);
+        bos.write(namePrevHash);
+        writeU32LE(bos, nameOutIdx);
+        writeU32LE(bos, HNSTxBuilder.SEQUENCE);
+        bos.write(feePrevHash);
+        writeU32LE(bos, feePrevIdx);
+        writeU32LE(bos, HNSTxBuilder.SEQUENCE);
+
+        HNSTxBuilder.writeVarInt(bos, 2);
+        serializeNameOutput(bos, nameValue, recipientAddrHash, finalizeCovenant);
+        serializeSimpleOutput(bos, change, feeAddrHash);
+
+        writeU32LE(bos, 0); // locktime
+
+        // Witnesses
+        HNSTxBuilder.writeVarInt(bos, 2);
+        HNSTxBuilder.writeVarBytes(bos, sig0);
+        HNSTxBuilder.writeVarBytes(bos, ownerPubKey);
+        HNSTxBuilder.writeVarInt(bos, 2);
+        HNSTxBuilder.writeVarBytes(bos, sig1);
+        HNSTxBuilder.writeVarBytes(bos, feePubKey);
+
+        return bos.toByteArray();
+    }
+
+    /** blake2b-160 of pubkey = address hash */
+    static byte[] blake2b160(byte[] pubkey) {
+        return Blake2b.hash(pubkey, 20);
     }
 
     /**
