@@ -105,4 +105,5 @@ public class DnsServer {
     public boolean   isNameIndexReady() { return nameIndexReady; }
     public NameIndex getNameIndex()     { return nameIndex; }
     public int       getNameCount()     { return nameIndex.size(); }
+    public RecursiveResolver getRecursiveResolver() { return recursive; }
 }

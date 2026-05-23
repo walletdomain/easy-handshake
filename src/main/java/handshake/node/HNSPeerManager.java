@@ -161,10 +161,27 @@ public class HNSPeerManager {
     // Discover peers concurrently
     // -------------------------------------------------------------------------
 
+    /** Cached best brontide peers — refreshed by ChainFollower every block. */
+    private static volatile List<Peer> cachedBrontidePeers = new ArrayList<>();
+
+    public static void refreshBrontidePeerCache() {
+        try {
+            List<Peer> peers = discoverPeers();
+            cachedBrontidePeers = peers;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /** Returns up to n best-scoring peers for transaction broadcast. */
     public static List<Peer> getBestPeers(int n) {
+        List<Peer> cached = cachedBrontidePeers;
+        if (!cached.isEmpty())
+            return cached.subList(0, Math.min(n, cached.size()));
+        // Fall back to live discovery if cache is empty
         try {
             List<Peer> all = discoverPeers();
+            cachedBrontidePeers = all;
             return all.subList(0, Math.min(n, all.size()));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -371,6 +388,21 @@ public class HNSPeerManager {
                     cfg.httpPort(), "1.0.0");
             httpServer.start();
 
+            // ── HTTPS server (DoH + secure dashboard) ─────────────────────
+            final HttpsNodeServer[] httpsServerRef = {null};
+            try {
+                String dataDir = db.getDataDir();
+                TLSManager tls = new TLSManager(dataDir);
+                tls.init();
+                httpsServerRef[0] = new HttpsNodeServer(httpServer, tls);
+                httpsServerRef[0].start();
+            } catch (Exception e) {
+                System.out.println("[HTTPS] Failed to start HTTPS server: "
+                        + e.getMessage());
+                System.out.println("[HTTPS] DoH will not be available. "
+                        + "HTTP dashboard still available on port 8888.");
+            }
+
             // ── Phase 5: Follow the live chain ────────────────────────────
             ChainFollower follower = new ChainFollower(db);
             follower.start();
@@ -452,6 +484,7 @@ public class HNSPeerManager {
                 if (finalDns != null) finalDns.stop();
                 follower.stop();
                 httpServer.stop();
+                if (httpsServerRef[0] != null) httpsServerRef[0].stop();
                 server.stop();
             }
         }

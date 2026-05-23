@@ -175,12 +175,18 @@ public class DnsMessage {
         }
 
         // Resource records
-        for (int i = 0; i < anCount; i++)
-            msg.answers.add(readRR(data, pos, len));
-        for (int i = 0; i < nsCount; i++)
-            msg.authority.add(readRR(data, pos, len));
-        for (int i = 0; i < arCount; i++)
-            msg.additional.add(readRR(data, pos, len));
+        for (int i = 0; i < anCount; i++) {
+            ResourceRecord rr = readRR(data, pos, len);
+            if (rr != null) msg.answers.add(rr);
+        }
+        for (int i = 0; i < nsCount; i++) {
+            ResourceRecord rr = readRR(data, pos, len);
+            if (rr != null) msg.authority.add(rr);
+        }
+        for (int i = 0; i < arCount; i++) {
+            ResourceRecord rr = readRR(data, pos, len);
+            if (rr != null) msg.additional.add(rr);
+        }
 
         return msg;
     }
@@ -201,6 +207,19 @@ public class DnsMessage {
      * Builds a SERVFAIL response.
      * Used when an upstream query fails or an internal error occurs.
      */
+    /** Builds a minimal SERVFAIL response with no query context (ID=0). */
+    public static byte[] buildMinimalServfail() {
+        // DNS wire: ID(2) + flags(2) + counts(8) = 12 bytes minimum
+        return new byte[]{
+                0x00, 0x00,  // ID = 0
+                (byte)0x80, 0x02,  // QR=1, OPCODE=0, RCODE=SERVFAIL(2)
+                0x00, 0x00,  // QDCOUNT = 0
+                0x00, 0x00,  // ANCOUNT = 0
+                0x00, 0x00,  // NSCOUNT = 0
+                0x00, 0x00   // ARCOUNT = 0
+        };
+    }
+
     public static byte[] buildServfail(Message query) {
         return buildErrorResponse(query, RCODE_SERVFAIL, false);
     }
@@ -214,6 +233,47 @@ public class DnsMessage {
      * @param nsNames  list of nameserver hostnames (e.g. ["ns1.example.com."])
      * @param ttl      TTL for the NS records
      */
+    /**
+     * Builds an NS referral response with glue A/AAAA records in the additional section.
+     * This is critical for Handshake TLDs — without glue, resolvers can't find
+     * the nameserver IP and the delegation chain breaks.
+     */
+    public static byte[] buildNsReferralWithGlue(
+            Message query, String tld,
+            List<String> nsNames,
+            java.util.Map<String, String> glue4,
+            java.util.Map<String, String> glue6,
+            long ttl) {
+
+        Builder b = new Builder(query.header.id(),
+                FLAG_QR | FLAG_AA, RCODE_OK);
+        b.addQuestion(query.questions.get(0));
+
+        // Authority section: NS records
+        for (String ns : nsNames) {
+            String fqdn = ns.endsWith(".") ? ns : ns + ".";
+            b.addAuthority(tld + ".", TYPE_NS, CLASS_IN, ttl, encodeName(fqdn));
+        }
+
+        // Additional section: glue A records
+        for (java.util.Map.Entry<String, String> e : glue4.entrySet()) {
+            try {
+                byte[] ip = java.net.Inet4Address.getByName(e.getValue()).getAddress();
+                b.addAdditional(e.getKey(), TYPE_A, CLASS_IN, ttl, ip);
+            } catch (Exception ignored) {}
+        }
+
+        // Additional section: glue AAAA records
+        for (java.util.Map.Entry<String, String> e : glue6.entrySet()) {
+            try {
+                byte[] ip = java.net.Inet6Address.getByName(e.getValue()).getAddress();
+                b.addAdditional(e.getKey(), TYPE_AAAA, CLASS_IN, ttl, ip);
+            } catch (Exception ignored) {}
+        }
+
+        return b.build();
+    }
+
     public static byte[] buildNsReferral(Message query, String tld,
                                          List<String> nsNames, long ttl) {
         Builder b = new Builder(query.header.id(),
@@ -364,12 +424,13 @@ public class DnsMessage {
 
     /** Reads a DNS name (with pointer compression support) from data[pos]. */
     private static String readName(byte[] data, int[] pos, int len) {
-        StringBuilder sb   = new StringBuilder();
-        int           p    = pos[0];
+        StringBuilder sb     = new StringBuilder();
+        int           p      = pos[0];
         boolean       jumped = false;
         int           jumps  = 0;
+        int           safeLen = Math.min(len, data.length);
 
-        while (p < len) {
+        while (p < safeLen) {
             int labelLen = data[p] & 0xFF;
 
             if (labelLen == 0) {
@@ -379,21 +440,28 @@ public class DnsMessage {
 
             if ((labelLen & 0xC0) == 0xC0) {
                 // Pointer compression
-                if (p + 1 >= len) break;
+                if (p + 1 >= safeLen) {
+                    if (!jumped) pos[0] = p + 2;
+                    break;
+                }
                 int ptr = ((labelLen & 0x3F) << 8) | (data[p+1] & 0xFF);
                 if (!jumped) pos[0] = p + 2;
                 jumped = true;
+                if (ptr >= safeLen || ++jumps > 10) break; // loop guard
                 p = ptr;
-                if (++jumps > 10) break; // loop guard
                 continue;
             }
 
+            // Regular label
             p++;
-            if (p + labelLen > len) break;
+            if (p + labelLen > safeLen) break;
             if (sb.length() > 0) sb.append('.');
-            sb.append(new String(data, p, labelLen));
+            sb.append(new String(data, p, labelLen,
+                    java.nio.charset.StandardCharsets.US_ASCII));
             p += labelLen;
         }
+
+        if (!jumped) pos[0] = p + (p < safeLen ? 1 : 0);
 
         if (sb.length() > 0 && sb.charAt(sb.length()-1) != '.')
             sb.append('.');
@@ -424,24 +492,35 @@ public class DnsMessage {
     }
 
     private static int readUInt16(byte[] data, int[] pos) {
+        if (pos[0] + 1 >= data.length) return 0; // bounds guard
         int v = ((data[pos[0]] & 0xFF) << 8) | (data[pos[0]+1] & 0xFF);
         pos[0] += 2;
         return v;
     }
 
     private static ResourceRecord readRR(byte[] data, int[] pos, int len) {
+        if (pos[0] >= len) return null;
         String name   = readName(data, pos, len);
+        if (pos[0] + 10 > data.length) return null; // need at least type+class+ttl+rdlen
         int    type   = readUInt16(data, pos);
         int    cls    = readUInt16(data, pos);
+        if (pos[0] + 4 > data.length) return null;
         long   ttl    = ((data[pos[0]] & 0xFFL) << 24)
                 | ((data[pos[0]+1] & 0xFFL) << 16)
                 | ((data[pos[0]+2] & 0xFFL) << 8)
                 |  (data[pos[0]+3] & 0xFFL);
         pos[0] += 4;
-        int    rdlen  = readUInt16(data, pos);
-        int    rdataOffset = pos[0]; // offset of rdata in full message
+        if (pos[0] + 2 > data.length) return null;
+        int rdlen = readUInt16(data, pos);
+        // Sanity check rdlen
+        if (rdlen < 0 || pos[0] + rdlen > data.length) {
+            // Clamp to available bytes
+            rdlen = Math.max(0, data.length - pos[0]);
+        }
+        int    rdataOffset = pos[0];
         byte[] rdata  = new byte[rdlen];
-        System.arraycopy(data, pos[0], rdata, 0, rdlen);
+        if (rdlen > 0)
+            System.arraycopy(data, pos[0], rdata, 0, rdlen);
         pos[0] += rdlen;
         return new ResourceRecord(name, type, cls, ttl, rdata, rdataOffset);
     }

@@ -168,14 +168,100 @@ public class AuthoritativeServer {
     private byte[] buildNsResponse(DnsMessage.Message query,
                                    String tld, byte[] resource) {
         List<String> nsNames = parseNsRecords(resource);
-
-        if (nsNames.isEmpty()) {
-            // Name exists but no NS records — owner hasn't delegated yet
-            // Return a NOERROR with no answers (empty response)
+        if (nsNames.isEmpty())
             return buildEmptyResponse(query);
-        }
 
-        return DnsMessage.buildNsReferral(query, tld, nsNames, DEFAULT_TTL);
+        // Parse glue records (NS name → IP)
+        java.util.Map<String, String> glue4 = parseGlue4Records(resource);
+        java.util.Map<String, String> glue6 = parseGlue6Records(resource);
+
+        return DnsMessage.buildNsReferralWithGlue(
+                query, tld, nsNames, glue4, glue6, DEFAULT_TTL);
+    }
+
+    /** Parses GLUE4 records: ns name → IPv4 address string. */
+    private static java.util.Map<String, String> parseGlue4Records(byte[] resource) {
+        java.util.Map<String, String> glue = new java.util.LinkedHashMap<>();
+        if (resource == null || resource.length == 0) return glue;
+        int i = (resource.length > 1 && resource[0] == 0x00) ? 1 : 0;
+        while (i < resource.length) {
+            int type = resource[i++] & 0xFF;
+            switch (type) {
+                case 0: { // DS
+                    if (i + 5 > resource.length) return glue;
+                    i += 5 + (resource[i + 4] & 0xFF);
+                    break;
+                }
+                case 1: { // NS — skip
+                    int[] r = readWireName(resource, i);
+                    if (r == null) return glue;
+                    i = r[0];
+                    break;
+                }
+                case 2: { // GLUE4
+                    int[] r = readWireName(resource, i);
+                    if (r == null || r[0] + 4 > resource.length) return glue;
+                    String name = wireBytesToName(resource, i);
+                    if (!name.endsWith(".")) name += ".";
+                    byte[] ip = new byte[]{resource[r[0]], resource[r[0]+1],
+                            resource[r[0]+2], resource[r[0]+3]};
+                    glue.put(name, (ip[0]&0xFF)+"."+( ip[1]&0xFF)+"."+(ip[2]&0xFF)+"."+(ip[3]&0xFF));
+                    i = r[0] + 4;
+                    break;
+                }
+                case 3: { // GLUE6 — skip
+                    int[] r = readWireName(resource, i);
+                    if (r == null || r[0] + 16 > resource.length) return glue;
+                    i = r[0] + 16;
+                    break;
+                }
+                case 4: i += 4;  break; // SYNTH4
+                case 5: i += 16; break; // SYNTH6
+                case 6: { // TXT
+                    if (i >= resource.length) return glue;
+                    int count = resource[i++] & 0xFF;
+                    for (int t = 0; t < count && i < resource.length; t++) {
+                        int len = resource[i++] & 0xFF;
+                        i += len;
+                    }
+                    break;
+                }
+                default: return glue;
+            }
+        }
+        return glue;
+    }
+
+    /** Parses GLUE6 records: ns name → IPv6 address string. */
+    private static java.util.Map<String, String> parseGlue6Records(byte[] resource) {
+        java.util.Map<String, String> glue = new java.util.LinkedHashMap<>();
+        if (resource == null || resource.length == 0) return glue;
+        int i = (resource.length > 1 && resource[0] == 0x00) ? 1 : 0;
+        while (i < resource.length) {
+            int type = resource[i++] & 0xFF;
+            switch (type) {
+                case 0: { if (i + 5 > resource.length) return glue; i += 5 + (resource[i+4]&0xFF); break; }
+                case 1: { int[] r = readWireName(resource, i); if (r==null) return glue; i=r[0]; break; }
+                case 2: { int[] r = readWireName(resource, i); if (r==null||r[0]+4>resource.length) return glue; i=r[0]+4; break; }
+                case 3: { // GLUE6
+                    int[] r = readWireName(resource, i);
+                    if (r == null || r[0] + 16 > resource.length) return glue;
+                    String name = wireBytesToName(resource, i);
+                    if (!name.endsWith(".")) name += ".";
+                    byte[] ip = java.util.Arrays.copyOfRange(resource, r[0], r[0]+16);
+                    try {
+                        glue.put(name, java.net.Inet6Address.getByAddress(ip).getHostAddress());
+                    } catch (Exception ignored) {}
+                    i = r[0] + 16;
+                    break;
+                }
+                case 4: i += 4; break;
+                case 5: i += 16; break;
+                case 6: { if (i>=resource.length) return glue; int c=resource[i++]&0xFF; for(int t=0;t<c&&i<resource.length;t++){int l=resource[i++]&0xFF;i+=l;} break; }
+                default: return glue;
+            }
+        }
+        return glue;
     }
 
     /**

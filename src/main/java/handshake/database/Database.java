@@ -55,6 +55,7 @@ public class Database implements AutoCloseable {
     // -------------------------------------------------------------------------
 
     private final MVStore             store;
+    private final String              dbPath;
     private final MVMap<Long, byte[]> headers;
     private final MVMap<String, Long> hashes;
     private final MVMap<Long, byte[]> chainwork;
@@ -88,6 +89,7 @@ public class Database implements AutoCloseable {
      */
     public Database(String path, boolean storeBlocks) {
         this.storeBlocks = storeBlocks;
+        this.dbPath = path;
         File dir = new File(path).getParentFile();
         if (dir != null && !dir.exists() && !dir.mkdirs())
             System.err.println("[Database] Warning: could not create directory: " + dir);
@@ -166,6 +168,13 @@ public class Database implements AutoCloseable {
     }
 
     /** Returns the highest stored header height, or -1. */
+    /** Returns the directory containing the database file. */
+    public String getDataDir() {
+        File parent = new File(dbPath).getParentFile();
+        return parent != null ? parent.getAbsolutePath()
+                : new File(".").getAbsolutePath();
+    }
+
     public int getTipHeight() {
         return (int) bytesToLong(meta.get(META_HEADER_TIP));
     }

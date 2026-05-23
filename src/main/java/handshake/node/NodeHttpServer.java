@@ -72,6 +72,7 @@ public class NodeHttpServer {
 
     public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
         this.nameIndex = nameIndex;
+        this.api.setNameIndex(nameIndex); // wire into name RPC handlers
     }
 
     public void setWalletManager(handshake.wallet.WalletManager wm) {
@@ -108,29 +109,7 @@ public class NodeHttpServer {
         server = HttpServer.create(new InetSocketAddress(bind, port), 0);
         System.out.println("[HTTP] Binding to " + bind + ":" + port);
 
-        // JSON-RPC dispatcher (POST /)
-        server.createContext("/", exchange -> {
-            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                new RpcHandler().handle(exchange);
-            } else {
-                new StaticHandler().handle(exchange);
-            }
-        });
-
-        // REST API routes
-        server.createContext("/api/wallet",          new WalletHandler());
-        server.createContext("/wallet",              new StaticHandler());
-        server.createContext("/api/status",          new StatusHandler());
-        server.createContext("/api/block/",          new BlockHandler());
-        server.createContext("/api/events",          new SseHandler());
-        server.createContext("/api/nameindex",       new NameIndexStatusHandler());
-        server.createContext("/api/config",          new ConfigHandler());
-        server.createContext("/api/peers",           new PeersHandler());
-        server.createContext("/api/seeds",           new SeedsHandler());
-        server.createContext("/block/",              new RestBlockHandler());
-        server.createContext("/header/",             new RestHeaderHandler());
-        server.createContext("/tx/",                 new RestTxHandler());
-        server.createContext("/coin/",               new RestCoinHandler());
+        registerContextsOn(server);
 
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -140,10 +119,161 @@ public class NodeHttpServer {
         System.out.println("[HTTP] RPC:       http://localhost:" + port + " (POST)");
     }
 
+    /**
+     * Registers all HTTP context handlers on the given server.
+     * Called for both HTTP (port 8888) and HTTPS (port 8443) servers
+     * so they share identical handler instances.
+     */
+    public void registerContextsOn(com.sun.net.httpserver.HttpServer s) {
+        // JSON-RPC dispatcher (POST /) + static files (GET /)
+        s.createContext("/", exchange -> {
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                new RpcHandler().handle(exchange);
+            } else {
+                new StaticHandler().handle(exchange);
+            }
+        });
+
+        // REST API routes
+        s.createContext("/name/",              new RestNameHandler());
+        s.createContext("/dns-query",           new DoHHandler());
+        s.createContext("/api/wallet",          new WalletHandler());
+        s.createContext("/wallet",              new StaticHandler());
+        s.createContext("/api/status",          new StatusHandler());
+        s.createContext("/api/block/",          new BlockHandler());
+        s.createContext("/api/events",          new SseHandler());
+        s.createContext("/api/nameindex",       new NameIndexStatusHandler());
+        s.createContext("/api/config",          new ConfigHandler());
+        s.createContext("/api/peers",           new PeersHandler());
+        s.createContext("/api/seeds",           new SeedsHandler());
+        s.createContext("/block/",              new RestBlockHandler());
+        s.createContext("/header/",             new RestHeaderHandler());
+        s.createContext("/tx/",                 new RestTxHandler());
+        s.createContext("/coin/",               new RestCoinHandler());
+    }
+
     public void stop() {
         if (server != null) {
             server.stop(1);
             System.out.println("[HTTP] Server stopped.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /name/:name         → name info
+    // GET /name/:name/resource → DNS records
+    // -------------------------------------------------------------------------
+
+    private class RestNameHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            if (isNotGet(exchange)) { methodNotAllowed(exchange); return; }
+            String path = exchange.getRequestURI().getPath();
+            String[] parts = path.split("/");
+            if (parts.length < 3) { respond(exchange, 400, "{\"error\":\"name required\"}"); return; }
+            String name = parts[2];
+            boolean resource = parts.length >= 4 && parts[3].equals("resource");
+            try {
+                String result = resource
+                        ? api.rpc("getnameresource", java.util.List.of(name), "rest")
+                        : api.rpc("getnameinfo",     java.util.List.of(name), "rest");
+                // Extract result value from {"id":...,"result":<value>,"error":null}
+                int idx = result.indexOf("\"result\":");
+                String body;
+                if (idx >= 0) {
+                    String after = result.substring(idx + 9).trim();
+                    int errIdx = after.indexOf(",\"error\"");
+                    body = errIdx >= 0 ? after.substring(0, errIdx).trim() : after;
+                } else {
+                    body = result;
+                }
+                respond(exchange, 200, body);
+            } catch (Exception e) {
+                respond(exchange, 404, "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        }
+
+        private void respond(HttpExchange ex, int code, String body) throws IOException {
+            byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.getResponseHeaders().set("Content-Type", "application/json");
+            ex.sendResponseHeaders(code, bytes.length);
+            ex.getResponseBody().write(bytes);
+            ex.close();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // DoH — DNS over HTTPS (RFC 8484)
+    // GET  /dns-query?dns=<base64url-encoded-query>
+    // POST /dns-query  Content-Type: application/dns-message
+    // -------------------------------------------------------------------------
+
+    private class DoHHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST");
+
+            if (exchange.getRequestMethod().equals("OPTIONS")) {
+                exchange.sendResponseHeaders(204, -1);
+                exchange.close();
+                return;
+            }
+
+            if (dnsServer == null || !dnsServer.isNameIndexReady()) {
+                exchange.sendResponseHeaders(503, 0);
+                exchange.getResponseBody().write("DNS not ready".getBytes());
+                exchange.close();
+                return;
+            }
+
+            try {
+                byte[] rawQuery;
+                String method = exchange.getRequestMethod();
+
+                if (method.equals("GET")) {
+                    // GET /dns-query?dns=<base64url>
+                    String query = exchange.getRequestURI().getQuery();
+                    if (query == null || !query.startsWith("dns=")) {
+                        exchange.sendResponseHeaders(400, 0);
+                        exchange.close();
+                        return;
+                    }
+                    String b64 = query.substring(4)
+                            .replace('-', '+').replace('_', '/');
+                    // Add padding
+                    int pad = (4 - b64.length() % 4) % 4;
+                    b64 += "==".substring(0, pad);
+                    rawQuery = java.util.Base64.getDecoder().decode(b64);
+                } else if (method.equals("POST")) {
+                    rawQuery = exchange.getRequestBody().readAllBytes();
+                } else {
+                    methodNotAllowed(exchange);
+                    return;
+                }
+
+                byte[] response = dnsServer.getRecursiveResolver()
+                        .resolveRaw(rawQuery);
+
+                if (response == null || response.length == 0) {
+                    exchange.sendResponseHeaders(500, 0);
+                    exchange.close();
+                    return;
+                }
+
+                exchange.getResponseHeaders().set("Content-Type",
+                        "application/dns-message");
+                exchange.getResponseHeaders().set("Cache-Control",
+                        "max-age=30");
+                exchange.sendResponseHeaders(200, response.length);
+                exchange.getResponseBody().write(response);
+            } catch (Exception e) {
+                System.out.printf("[DoH] Error: %s%n", e.getMessage());
+                exchange.sendResponseHeaders(500, 0);
+            } finally {
+                exchange.close();
+            }
         }
     }
 

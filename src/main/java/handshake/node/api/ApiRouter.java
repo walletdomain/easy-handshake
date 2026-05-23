@@ -36,6 +36,10 @@ public class ApiRouter {
         this.name  = new NameApi(db);
     }
 
+    public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
+        this.name.setNameIndex(nameIndex);
+    }
+
     // =========================================================================
     // REST API
     // =========================================================================
@@ -110,20 +114,70 @@ public class ApiRouter {
             // ── Names ─────────────────────────────────────────────────────
             case "getnameinfo"          -> name.rpcGetNameInfo(params);
             case "getnameresource"      -> name.rpcGetNameResource(params);
+            case "getnameproof"         -> name.rpcGetNameProof(params);
+            case "getnames"             -> name.rpcGetNames(params);
 
             // ── Node ──────────────────────────────────────────────────────
             case "getinfo"              -> node.rpcGetInfo();
             case "getnetworkinfo"       -> node.rpcGetNetworkInfo();
             case "getmemoryinfo"        -> node.rpcGetMemoryInfo();
-            case "getmempoolinfo"       -> node.rpcGetMempoolInfo();
-            case "getconnectioncount"   -> "0";
-            case "getpeerinfo",
-                 "getrawmempool"        -> "[]";
+            case "getmempoolinfo"       -> json(
+                    "\"size\"",  str(handshake.node.HNSMempool.get().size()),
+                    "\"bytes\"", "0",
+                    "\"usage\"", "0");
+            case "getconnectioncount"   -> str(
+                    handshake.node.PeerScorecard.get().getAllRecords().stream()
+                            .filter(r -> r.score >= 40 && !r.isBackedOff()).count());
+            case "getpeerinfo"          -> rpcGetPeerInfo();
+            case "getrawmempool"        -> rpcGetRawMempool();
+            case "validateaddress"      -> rpcValidateAddress(params);
             case "estimatefee"          -> str(0.01);
             case "stop"                 -> q("Stopping.");
 
             default -> throw new JsonBuilder.RpcException(
                     "Method not found: " + method, -32601);
         };
+    }
+
+    private String rpcGetPeerInfo() {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (handshake.node.PeerScorecard.PeerRecord r :
+                handshake.node.PeerScorecard.get().getAllRecords()) {
+            if (r.isBlacklisted()) continue;
+            if (!first) sb.append(",");
+            first = false;
+            sb.append(String.format(
+                    "{\"addr\":\"%s\",\"version\":\"%s\",\"height\":%d,\"score\":%d}",
+                    r.ip,
+                    r.lastVersion != null ? r.lastVersion.replace("\"","") : "",
+                    r.lastKnownHeight,
+                    r.score));
+        }
+        return sb.append("]").toString();
+    }
+
+    private String rpcGetRawMempool() {
+        java.util.List<String> txids = handshake.node.HNSMempool.get().getSnapshot();
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < txids.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append("\"").append(txids.get(i)).append("\"");
+        }
+        return sb.append("]").toString();
+    }
+
+    private String rpcValidateAddress(List<Object> params) {
+        if (params.isEmpty())
+            throw new JsonBuilder.RpcException("address required", -8);
+        String addr = params.get(0).toString();
+        try {
+            byte[] hash = handshake.wallet.HNSAddress.decode(addr);
+            boolean valid = hash != null && hash.length == 20;
+            return String.format(
+                    "{\"isvalid\":%b,\"address\":\"%s\"}", valid, addr);
+        } catch (Exception e) {
+            return String.format("{\"isvalid\":false,\"address\":\"%s\"}", addr);
+        }
     }
 }

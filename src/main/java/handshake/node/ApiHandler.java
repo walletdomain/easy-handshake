@@ -31,10 +31,15 @@ public class ApiHandler {
 
     private final Database db;
     private final String   version;
+    private handshake.node.dns.NameIndex nameIndex;
 
     public ApiHandler(Database db, String version) {
         this.db      = db;
         this.version = version;
+    }
+
+    public void setNameIndex(handshake.node.dns.NameIndex nameIndex) {
+        this.nameIndex = nameIndex;
     }
 
     // =========================================================================
@@ -181,16 +186,28 @@ public class ApiHandler {
             // ── Network ───────────────────────────────────────────────────
             case "getinfo"            -> rpcGetInfo();
             case "getnetworkinfo"     -> rpcGetNetworkInfo();
-            case "getconnectioncount" -> "0";
-            case "getpeerinfo"        -> "[]";
+            case "getconnectioncount" -> str(handshake.node.PeerScorecard.get()
+                    .getAllRecords().stream()
+                    .filter(r -> r.score >= 40 && !r.isBackedOff())
+                    .count());
+            case "getpeerinfo"        -> rpcGetPeerInfo();
             case "getrawmempool"      -> rpcGetRawMempool();
 
-            // ── Mempool stubs ─────────────────────────────────────────────
+            // ── Mempool ───────────────────────────────────────────────────
             case "getmempoolinfo"     -> json(
-                    "size",  "0",
+                    "size",  str(handshake.node.HNSMempool.get().size()),
                     "bytes", "0",
                     "usage", "0"
             );
+
+            // ── Names (Handshake) ─────────────────────────────────────────
+            case "getnameinfo"        -> rpcGetNameInfo(params);
+            case "getnameresource"    -> rpcGetNameResource(params);
+            case "getnameproof"       -> rpcGetNameProof(params);
+            case "getnames"           -> rpcGetNames(params);
+
+            // ── Wallet utils ──────────────────────────────────────────────
+            case "validateaddress"    -> rpcValidateAddress(params);
             case "estimatefee"        -> str(0.01);
 
             // ── Node ──────────────────────────────────────────────────────
@@ -813,6 +830,98 @@ public class ApiHandler {
         try { return Integer.parseInt(v.toString()); }
         catch (NumberFormatException e) {
             throw new RpcException("Expected integer, got: " + v, -8);
+        }
+    }
+
+    // =========================================================================
+    // New RPC implementations
+    // =========================================================================
+
+    private String rpcGetPeerInfo() {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (handshake.node.PeerScorecard.PeerRecord r :
+                handshake.node.PeerScorecard.get().getAllRecords()) {
+            if (r.isBlacklisted()) continue;
+            if (!first) sb.append(",");
+            first = false;
+            sb.append(String.format(
+                    "{\"addr\":\"%s\",\"version\":\"%s\",\"height\":%d," +
+                            "\"score\":%d,\"backoff\":%b,\"encrypted\":%b}",
+                    r.ip,
+                    r.lastVersion != null ? r.lastVersion.replace("\"","") : "",
+                    r.lastKnownHeight,
+                    r.score,
+                    r.isBackedOff(),
+                    false)); // cleartext by default — brontide peers don't currently set this
+        }
+        return sb.append("]").toString();
+    }
+
+    private String rpcGetNameInfo(List<Object> params) {
+        if (params.isEmpty()) throw new RpcException("name required", -8);
+        String name = params.get(0).toString();
+        if (nameIndex == null)
+            throw new RpcException("Name index not ready", -1);
+        byte[] resource = nameIndex.lookup(name);
+        if (resource == null)
+            return "{\"result\":null}";
+        // Decode records
+        java.util.List<handshake.wallet.HNSResource.Record> records =
+                handshake.wallet.HNSResource.decode(resource);
+        return String.format(
+                "{\"name\":\"%s\",\"state\":\"CLOSED\",\"registered\":true," +
+                        "\"records\":%s,\"resourceSize\":%d}",
+                name,
+                handshake.wallet.HNSResource.toJson(records),
+                resource.length);
+    }
+
+    private String rpcGetNameResource(List<Object> params) {
+        if (params.isEmpty()) throw new RpcException("name required", -8);
+        String name = params.get(0).toString();
+        if (nameIndex == null)
+            throw new RpcException("Name index not ready", -1);
+        byte[] resource = nameIndex.lookup(name);
+        if (resource == null) return "null";
+        java.util.List<handshake.wallet.HNSResource.Record> records =
+                handshake.wallet.HNSResource.decode(resource);
+        return String.format("{\"records\":%s}",
+                handshake.wallet.HNSResource.toJson(records));
+    }
+
+    private String rpcGetNameProof(List<Object> params) {
+        // Urkel proof generation requires the full tree — stub for now
+        if (params.isEmpty()) throw new RpcException("name required", -8);
+        return "{\"proof\":null,\"note\":\"Urkel proof not yet implemented\"}";
+    }
+
+    private String rpcGetNames(List<Object> params) {
+        if (nameIndex == null)
+            throw new RpcException("Name index not ready", -1);
+        int limit = params.isEmpty() ? 100 :
+                Math.min(toInt(params.get(0)), 1000);
+        // Return first N names from index — lightweight sample
+        StringBuilder sb = new StringBuilder("[");
+        // NameIndex doesn't expose iteration yet — return count info instead
+        sb.append(String.format(
+                "{\"total\":%d,\"note\":\"Use getnameinfo <name> for specific lookup\"}",
+                nameIndex.size()));
+        return sb.append("]").toString();
+    }
+
+    private String rpcValidateAddress(List<Object> params) {
+        if (params.isEmpty()) throw new RpcException("address required", -8);
+        String addr = params.get(0).toString();
+        try {
+            byte[] hash = handshake.wallet.HNSAddress.decode(addr);
+            boolean valid = hash != null && hash.length == 20;
+            return String.format(
+                    "{\"isvalid\":%b,\"address\":\"%s\",\"scriptPubKey\":\"\"}",
+                    valid, addr);
+        } catch (Exception e) {
+            return String.format(
+                    "{\"isvalid\":false,\"address\":\"%s\"}", addr);
         }
     }
 }
