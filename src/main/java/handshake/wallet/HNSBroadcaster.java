@@ -39,6 +39,9 @@ public class HNSBroadcaster {
     // Relay node - trusted hsd instance for reliable mempool submission
     private static volatile String relayNodeUrl    = null;
     private static volatile String relayNodeApiKey = null;
+    // Skip relay after 3 consecutive timeouts to avoid slowing down broadcast
+    private static volatile int relayFailStreak    = 0;
+    private static final int    RELAY_SKIP_AFTER   = 3;
 
     public static void setRelayNode(String url, String apiKey) {
         relayNodeUrl    = url;
@@ -50,6 +53,12 @@ public class HNSBroadcaster {
      * Submits a raw transaction to a trusted hsd node via JSON-RPC.
      */
     static boolean submitViaRelay(byte[] rawTx) {
+        // Skip relay if it's been consistently failing
+        if (relayFailStreak >= RELAY_SKIP_AFTER) {
+            System.out.printf("[HNSBroadcaster] Relay skipped (failed %d times in a row)%n",
+                    relayFailStreak);
+            return false;
+        }
         String url    = relayNodeUrl;
         String apiKey = relayNodeApiKey;
         // Fallback to default relay if not configured
@@ -87,8 +96,12 @@ public class HNSBroadcaster {
             String response = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             System.out.printf("[HNSBroadcaster] Relay response (%d): %s%n",
                     code, response.length() > 120 ? response.substring(0, 120) : response);
-            return code == 200 && !response.contains("\"error\":{\"message\"");
+            boolean success = code == 200 && !response.contains("\"error\":{\"message\"");
+            if (success) relayFailStreak = 0; // reset on success
+            else relayFailStreak++;
+            return success;
         } catch (Exception e) {
+            relayFailStreak++;
             System.out.printf("[HNSBroadcaster] Relay submission failed: %s%n",
                     e.getMessage());
             return false;
@@ -106,93 +119,105 @@ public class HNSBroadcaster {
         if (addedToMempool)
             System.out.println("[HNSBroadcaster] Added to local mempool");
 
-        // Submit via relay node — most reliable path into mempool gossip
-        boolean relayOk = submitViaRelay(tx.raw);
-        if (relayOk)
-            System.out.println("[HNSBroadcaster] Relay node accepted tx");
-
-        // Also broadcast directly via P2P using INV announcement
-        // (more reliable than direct TX push — peers request what they want)
-        List<Peer> peers;
-        try {
-            peers = HNSPeerManager.discoverPeers();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return BroadcastResult.failure("Interrupted while discovering peers");
+        // Broadcast via brontide AND cleartext peers in parallel
+        List<Peer> peers = HNSPeerManager.getBestPeers(MAX_BROADCAST_PEERS);
+        if (peers.isEmpty()) {
+            System.out.println("[HNSBroadcaster] No peers available for broadcast");
         }
 
-        if (peers.isEmpty() && !relayOk)
-            return BroadcastResult.failure("No peers available and relay failed");
+        byte[] txidBytes = computeTxid(tx.raw);
 
-        List<Peer> targets = peers.isEmpty() ? List.of()
-                : peers.subList(0, Math.min(MAX_BROADCAST_PEERS, peers.size()));
+        // Submit brontide and cleartext discovery concurrently
+        java.util.concurrent.ExecutorService broadcastPool =
+                Executors.newFixedThreadPool(2);
 
-        ExecutorService exec = Executors.newFixedThreadPool(
-                Math.max(1, targets.size()));
-        List<Future<PeerResult>> futures = new ArrayList<>();
-        for (Peer peer : targets)
-            futures.add(exec.submit(() -> sendToPeer(peer, tx.raw)));
-
-        exec.shutdown();
-        try {
-            exec.awaitTermination(SEND_TIMEOUT_MS + CONNECT_TIMEOUT_MS,
-                    TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
-        List<PeerResult> results = new ArrayList<>();
-        int successes = 0;
-        for (Future<PeerResult> f : futures) {
-            try {
-                PeerResult r = f.isDone() ? f.get() : PeerResult.timeout();
-                results.add(r);
-                if (r.success) successes++;
-            } catch (Exception e) {
-                results.add(PeerResult.error(e.getMessage()));
+        Future<Integer> brontideFuture = broadcastPool.submit(() -> {
+            List<Peer> targets = peers.subList(0, Math.min(MAX_BROADCAST_PEERS, peers.size()));
+            java.util.concurrent.ExecutorService peerExec =
+                    Executors.newFixedThreadPool(Math.max(1, targets.size()));
+            List<Future<PeerResult>> peerFutures = new ArrayList<>();
+            for (Peer peer : targets)
+                peerFutures.add(peerExec.submit(() -> sendToPeer(peer, tx.raw)));
+            peerExec.shutdown();
+            try { peerExec.awaitTermination(8_000, TimeUnit.MILLISECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            int count = 0;
+            for (Future<PeerResult> f : peerFutures) {
+                try { if (f.isDone() && f.get().success) count++; }
+                catch (Exception ignored) {}
             }
-        }
+            return count;
+        });
 
-        for (Peer p : targets) {
-            try { p.socket.close(); } catch (Exception ignored) {}
-        }
+        Future<Integer> cleartextFuture = broadcastPool.submit(() -> {
+            int ct = 0;
+            List<String> ctIps = new ArrayList<>(HNSPeerManager.getCleartextCapable());
+            ctIps.sort((a, b) -> {
+                handshake.node.PeerScorecard.PeerRecord ra =
+                        handshake.node.PeerScorecard.get().getRecord(a);
+                handshake.node.PeerScorecard.PeerRecord rb =
+                        handshake.node.PeerScorecard.get().getRecord(b);
+                return (rb != null ? rb.score : 0) - (ra != null ? ra.score : 0);
+            });
+            ctIps = ctIps.subList(0, Math.min(MAX_BROADCAST_PEERS, ctIps.size()));
 
-        boolean ok = relayOk || successes >= MIN_SUCCESS_PEERS;
-
-        // Also broadcast to cleartext peers on port 12038
-        int cleartextSuccesses = 0;
-        try {
-            List<handshake.node.HNSCleartextPeer> ctPeers =
-                    handshake.node.HNSPeerManager.discoverCleartextPeers();
-            byte[] txidBytes = computeTxid(tx.raw);
-            List<handshake.node.HNSCleartextPeer> ctTargets =
-                    ctPeers.subList(0, Math.min(MAX_BROADCAST_PEERS, ctPeers.size()));
-            for (handshake.node.HNSCleartextPeer ctPeer : ctTargets) {
-                try {
-                    boolean sent = ctPeer.broadcastTx(txidBytes, tx.raw, 5_000);
-                    if (sent) {
-                        cleartextSuccesses++;
-                        System.out.printf("[Broadcaster] [%s:12038] TX sent via cleartext%n",
-                                ctPeer.getSeed().ipAddress());
+            java.util.concurrent.ExecutorService ctExec =
+                    Executors.newFixedThreadPool(Math.max(1, ctIps.size()));
+            List<Future<Boolean>> ctFutures = new ArrayList<>();
+            for (String ip : ctIps) {
+                final String fip = ip;
+                ctFutures.add(ctExec.submit(() -> {
+                    java.net.Socket socket = new java.net.Socket();
+                    try {
+                        socket.connect(
+                                new java.net.InetSocketAddress(fip,
+                                        handshake.node.HNSCleartextPeer.CLEARTEXT_PORT),
+                                2_000);
+                        socket.setSoTimeout(2_000);
+                        handshake.node.HNSCleartextPeer peer =
+                                new handshake.node.HNSCleartextPeer(
+                                        new handshake.node.Seed("", fip,
+                                                handshake.node.HNSCleartextPeer.CLEARTEXT_PORT),
+                                        socket);
+                        peer.handshake();
+                        boolean sent = peer.broadcastTx(txidBytes, tx.raw, 3_000);
+                        try { socket.close(); } catch (Exception ignored2) {}
+                        if (sent)
+                            System.out.printf("[Broadcaster] [%s:12038] TX sent%n", fip);
+                        return sent;
+                    } catch (Exception e) {
+                        try { socket.close(); } catch (Exception ignored2) {}
+                        return false;
                     }
-                } catch (Exception e) {
-                    System.out.printf("[Broadcaster] [%s:12038] failed: %s%n",
-                            ctPeer.getSeed().ipAddress(), e.getMessage());
-                } finally {
-                    ctPeer.close();
-                }
+                }));
             }
+            ctExec.shutdown();
+            try { ctExec.awaitTermination(6_000, TimeUnit.MILLISECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            for (Future<Boolean> f : ctFutures) {
+                try { if (f.isDone() && f.get()) ct++; } catch (Exception ignored) {}
+            }
+            return ct;
+        });
+
+        broadcastPool.shutdown();
+        try {
+            broadcastPool.awaitTermination(8_000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
 
-        ok = ok || cleartextSuccesses > 0;
-        System.out.printf("[HNSBroadcaster] Broadcast %s — relay=%s brontide=%d/%d cleartext=%d%n",
-                ok ? "SUCCESS" : "FAILED",
-                relayOk ? "OK" : "NO",
-                successes, targets.size(), cleartextSuccesses);
+        int successes = 0, cleartextSuccesses = 0;
+        try { successes = brontideFuture.get(); } catch (Exception ignored) {}
+        try { cleartextSuccesses = cleartextFuture.get(); } catch (Exception ignored) {}
 
-        return new BroadcastResult(ok, successes, targets.size(), results, tx.txid);
+        boolean ok = successes >= MIN_SUCCESS_PEERS || cleartextSuccesses > 0;
+        System.out.printf("[HNSBroadcaster] Broadcast %s — brontide=%d/%d cleartext=%d%n",
+                ok ? "SUCCESS" : "FAILED",
+                successes, peers.size(), cleartextSuccesses);
+
+        return new BroadcastResult(ok, successes, peers.size(),
+                new ArrayList<>(), tx.txid);
     }
 
     // ── Per-peer send ─────────────────────────────────────────────────────────

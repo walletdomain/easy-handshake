@@ -247,6 +247,7 @@ public class PeerCrawler {
             peer.close();
 
             PeerDiscovery.get().addCleartextPeer(ip);
+            HNSPeerManager.addCleartextCapable(ip); // cache for fast broadcast
             // Preserve existing version if we didn't get one
             PeerScorecard.PeerRecord existing = PeerScorecard.get().getRecord(ip);
             if (agent.isEmpty() && existing != null

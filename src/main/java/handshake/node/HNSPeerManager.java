@@ -161,6 +161,17 @@ public class HNSPeerManager {
     // Discover peers concurrently
     // -------------------------------------------------------------------------
 
+    /** Returns up to n best-scoring peers for transaction broadcast. */
+    public static List<Peer> getBestPeers(int n) {
+        try {
+            List<Peer> all = discoverPeers();
+            return all.subList(0, Math.min(n, all.size()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        }
+    }
+
     public static List<Peer> discoverPeers() throws InterruptedException {
         List<Future<Peer>> futures = new ArrayList<>();
 
@@ -220,41 +231,73 @@ public class HNSPeerManager {
         }
     }
 
+    /** IPs confirmed to be reachable on port 12038 — populated by PeerCrawler. */
+    private static final java.util.Set<String> cleartextCapable =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+    public static void addCleartextCapable(String ip) {
+        cleartextCapable.add(ip);
+    }
+
+    public static java.util.Set<String> getCleartextCapable() {
+        return cleartextCapable;
+    }
+
     /**
-     * Discovers cleartext peers by attempting port 12038 connections
-     * to all known peer IPs that don't have brontide keys.
+     * Connects to known-good cleartext peers for transaction broadcast.
+     * Uses a tight 2-second timeout since these IPs are pre-verified.
      */
     public static List<HNSCleartextPeer> discoverCleartextPeers() throws InterruptedException {
-        List<String> ips = new ArrayList<>();
-        for (PeerScorecard.PeerRecord r : PeerScorecard.get().getAllRecords()) {
-            if (!r.isBlacklisted()) ips.add(r.ip);
+        // Use cached known-good IPs — avoid full rediscovery on every broadcast
+        List<String> ips = new ArrayList<>(cleartextCapable);
+        if (ips.isEmpty()) {
+            // Fall back to all non-blacklisted peers if cache is empty
+            for (PeerScorecard.PeerRecord r : PeerScorecard.get().getAllRecords()) {
+                if (!r.isBlacklisted() && r.successCount > 0) ips.add(r.ip);
+            }
         }
-        // Also try known IPs from discovery that may not have brontide keys
-        for (Seed s : PeerDiscovery.get().getAllPeers()) {
-            if (!ips.contains(s.ipAddress())) ips.add(s.ipAddress());
-        }
+        // Limit to best MAX_BROADCAST_PEERS candidates by score
+        ips.sort((a, b) -> {
+            PeerScorecard.PeerRecord ra = PeerScorecard.get().getRecord(a);
+            PeerScorecard.PeerRecord rb = PeerScorecard.get().getRecord(b);
+            int sa = ra != null ? ra.score : 0;
+            int sb = rb != null ? rb.score : 0;
+            return sb - sa;
+        });
+        ips = ips.subList(0, Math.min(4, ips.size()));
 
         List<Future<HNSCleartextPeer>> futures = new ArrayList<>();
-        try (ExecutorService executor = Executors.newFixedThreadPool(
-                Math.min(ips.size(), POLL_THREADS * 2))) {
-            for (String ip : ips)
-                futures.add(executor.submit(() -> connectCleartext(ip)));
-            executor.shutdown();
-            executor.awaitTermination(CONNECT_TIMEOUT + 2000L, TimeUnit.MILLISECONDS);
+        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, ips.size()));
+        final int FAST_TIMEOUT = 2_000; // tight timeout for known-good peers
+        for (String ip : ips) {
+            final String fip = ip;
+            futures.add(executor.submit(() -> {
+                if (PeerScorecard.get().shouldSkip(fip)) return null;
+                Socket socket = new Socket();
+                try {
+                    socket.connect(new InetSocketAddress(fip, HNSCleartextPeer.CLEARTEXT_PORT),
+                            FAST_TIMEOUT);
+                    socket.setSoTimeout(FAST_TIMEOUT);
+                    HNSCleartextPeer peer = new HNSCleartextPeer(
+                            new Seed("", fip, HNSCleartextPeer.CLEARTEXT_PORT), socket);
+                    peer.handshake();
+                    return peer;
+                } catch (Exception e) {
+                    try { socket.close(); } catch (Exception ignored2) {}
+                    return null;
+                }
+            }));
         }
+        executor.shutdown();
+        executor.awaitTermination(FAST_TIMEOUT + 500L, TimeUnit.MILLISECONDS);
 
         List<HNSCleartextPeer> peers = new ArrayList<>();
         for (Future<HNSCleartextPeer> f : futures) {
             try {
                 HNSCleartextPeer p = f.get();
-                if (p != null) {
-                    peers.add(p);
-                    System.out.printf("  [%s] cleartext OK%n", p.getSeed().ipAddress());
-                }
+                if (p != null) peers.add(p);
             } catch (Exception ignored) {}
         }
-        System.out.printf("[HNSPeerManager] Cleartext peers: %d/%d connected%n",
-                peers.size(), ips.size());
         return peers;
     }
 

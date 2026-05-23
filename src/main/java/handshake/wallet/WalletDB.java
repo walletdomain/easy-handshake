@@ -409,7 +409,8 @@ public class WalletDB implements AutoCloseable {
         for (Map.Entry<String, String> e : names.entrySet()) {
             NameRecord r = NameRecord.fromStorage(e.getKey(), e.getValue());
             if (!walletId.equals(r.walletId)) continue;
-            if (r.state.equals("TRANSFERRING")) continue;
+            // Hide finalized/completed transfers — name has moved to recipient
+            if (r.state.equals("FINALIZED")) continue;
             // Filter expired names if we know the current height
             if (currentHeight > 0 && r.expireHeight < currentHeight) continue;
             list.add(r);

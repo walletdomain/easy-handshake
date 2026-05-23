@@ -451,7 +451,11 @@ function renderNamesTable() {
               </span>
             </td>
             <td style="padding:0.6rem 0.75rem;white-space:nowrap">
-              <button class="action-btn" onclick="transferName('${esc(n.name)}')">Transfer</button>
+              ${n.state === 'TRANSFERRING' || n.state === 'READY_TO_FINALIZE'
+      ? `<button class="action-btn" disabled
+                           style="opacity:0.3;cursor:not-allowed">Transfer</button>`
+      : `<button class="action-btn" onclick="transferName('${esc(n.name)}')">Transfer</button>`
+  }
               <button class="action-btn" onclick="manageDns('${esc(n.name)}')">DNS</button>
               <button class="action-btn" onclick="nameHistory('${esc(n.name)}')">History</button>
             </td>
