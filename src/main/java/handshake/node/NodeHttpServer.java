@@ -545,8 +545,12 @@ public class NodeHttpServer {
                     : "";
 
             try {
-                // POST /api/wallet/scan — start/resume scan
-                if (path.endsWith("/scan") && method.equals("POST")) {
+                // POST /api/wallet/scan/reset — reset scan height to 0
+                if (path.equals("/api/wallet/scan/reset") && method.equals("POST")) {
+                    walletManager.getWalletDB().setMeta("scan.lastHeight", "0");
+                    sendJson(exchange, 200, "{\"ok\":true,\"message\":\"Scan height reset to 0 — click Scan to rescan from genesis\"}");
+                    // POST /api/wallet/scan — start/resume scan
+                } else if (path.endsWith("/scan") && method.equals("POST")) {
                     if (walletScanner != null) {
                         walletScanner.startScan();
                         sendJson(exchange, 200,
@@ -577,6 +581,10 @@ public class NodeHttpServer {
                 } else if (path.endsWith("/send") && method.equals("POST")) {
                     String id = extractWalletId(path, "/send");
                     handleSend(exchange, id, body);
+                    // POST /api/wallet/{id}/transfer
+                } else if (path.endsWith("/transfer") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/transfer");
+                    handleTransfer(exchange, id, body);
                     // GET /api/wallet/{id}/address
                 } else if (path.endsWith("/address") && method.equals("GET")) {
                     String id = extractWalletId(path, "/address");
@@ -595,12 +603,15 @@ public class NodeHttpServer {
                     sendJson(exchange, 404, "{\"error\":\"Not found\"}");
                 }
             } catch (IllegalStateException e) {
-                // Wallet locked
-                sendJson(exchange, 403,
-                        "{\"error\":\"" + e.getMessage() + "\",\"locked\":true}");
+                String msg = e.getMessage() != null ? e.getMessage() : "error";
+                boolean isLocked = msg.toLowerCase().contains("lock");
+                sendJson(exchange, isLocked ? 403 : 500,
+                        "{\"error\":\"" + msg.replace("\"","'") + "\""
+                                + (isLocked ? ",\"locked\":true" : "") + "}");
             } catch (Exception e) {
                 sendJson(exchange, 500,
-                        "{\"error\":\"" + e.getMessage().replace("\"","'") + "\"}");
+                        "{\"error\":\"" + (e.getMessage() != null
+                                ? e.getMessage().replace("\"","'") : "unknown error") + "\"}");
             }
         }
 
@@ -656,6 +667,131 @@ public class NodeHttpServer {
             }
             sb.append("]}");
             sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleTransfer(com.sun.net.httpserver.HttpExchange ex,
+                                    String walletId, String body) throws Exception {
+            String name      = extractJsonString(body, "name");
+            String toAddr    = extractJsonString(body, "address");
+            String feeTxHash = extractJsonString(body, "feeTxHash");
+            String feeIdxStr = extractJsonString(body, "feeIndex");
+
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("name is required");
+            if (toAddr == null || toAddr.isBlank())
+                throw new IllegalArgumentException("address is required");
+
+            // Wallet must be unlocked
+            handshake.wallet.BIP32.HDKey master = walletManager.getMasterKey(walletId);
+            if (master == null)
+                throw new IllegalStateException("Wallet locked");
+
+            // Look up name record
+            handshake.wallet.WalletDB walletDb = walletManager.getWalletDB();
+            handshake.wallet.WalletDB.NameRecord nameRec = walletDb.getName(name);
+            System.out.printf("[Transfer] lookup name='%s' walletId='%s' nameRec=%s nameRecWalletId='%s'%n",
+                    name, walletId,
+                    nameRec == null ? "NULL" : "FOUND",
+                    nameRec == null ? "n/a" : nameRec.walletId);
+            if (nameRec == null)
+                throw new IllegalArgumentException("Name '" + name + "' not found in wallet");
+            if (nameRec.walletId == null || !nameRec.walletId.equals(walletId))
+                throw new IllegalArgumentException("Name '" + name + "' belongs to a different wallet (stored: '"
+                        + nameRec.walletId + "')");
+
+            System.out.printf("[Transfer] nameRec: utxoTxHash='%s' nameHash='%s' claimHeight=%d ownerAddr='%s'%n",
+                    nameRec.utxoTxHash, nameRec.nameHash,
+                    nameRec.claimHeight, nameRec.ownerAddress);
+            if (nameRec.utxoTxHash == null || nameRec.utxoTxHash.isEmpty()) {
+                throw new IllegalStateException(
+                        "Name UTXO not found — rescan wallet first");
+            }
+
+            // Derive owner key
+            handshake.wallet.HNSSigner signer =
+                    new handshake.wallet.HNSSigner(walletManager, walletDb);
+            handshake.wallet.WalletDB.AddressRecord addrRec =
+                    signer.findAddressRecord(walletId, nameRec.ownerAddress);
+            if (addrRec == null)
+                throw new IllegalStateException(
+                        "Owner address not found: " + nameRec.ownerAddress);
+
+            handshake.wallet.BIP32.HDKey ownerKey = handshake.wallet.BIP32.deriveAddress(
+                    master, addrRec.account, addrRec.change, addrRec.index);
+            byte[] ownerAddrHash =
+                    handshake.wallet.HNSAddress.decode(nameRec.ownerAddress);
+            byte[] recipientHash =
+                    handshake.wallet.HNSAddress.decode(toAddr);
+            if (recipientHash == null)
+                throw new IllegalArgumentException("Invalid recipient address");
+
+            // Get name UTXO value from DB — use getAllUtxosForAddress since name UTXOs are marked spent=true
+            java.util.List<handshake.wallet.WalletDB.UtxoRecord> utxos =
+                    walletDb.getAllUtxosForAddress(nameRec.ownerAddress);
+            handshake.wallet.WalletDB.UtxoRecord nameUtxo = null;
+            for (handshake.wallet.WalletDB.UtxoRecord u : utxos) {
+                if (u.txHash.equals(nameRec.utxoTxHash)
+                        && u.outputIndex == nameRec.utxoIndex) {
+                    nameUtxo = u;
+                    break;
+                }
+            }
+            System.out.printf("[Transfer] Looking for UTXO txHash='%s' idx=%d in %d UTXOs for addr='%s'%n",
+                    nameRec.utxoTxHash, nameRec.utxoIndex,
+                    utxos.size(), nameRec.ownerAddress);
+            for (handshake.wallet.WalletDB.UtxoRecord u : utxos) {
+                System.out.printf("[Transfer]   UTXO: txHash='%s' idx=%d value=%d%n",
+                        u.txHash, u.outputIndex, u.value);
+            }
+            if (nameUtxo == null)
+                throw new IllegalStateException(
+                        "Name UTXO not found in DB — rescan wallet first");
+
+            // Select fee UTXO — either specified or auto-selected
+            handshake.wallet.HNSTxBuilder.UtxoInput feeInput;
+            if (feeTxHash != null && !feeTxHash.isBlank() && feeIdxStr != null) {
+                // Use specified fee UTXO
+                int feeIdx = Integer.parseInt(feeIdxStr);
+                handshake.wallet.WalletDB.UtxoRecord feeUtxo = null;
+                for (handshake.wallet.WalletDB.UtxoRecord u :
+                        signer.getSpendableUtxos(walletId)) {
+                    if (u.txHash.equals(feeTxHash) && u.outputIndex == feeIdx) {
+                        feeUtxo = u;
+                        break;
+                    }
+                }
+                if (feeUtxo == null)
+                    throw new IllegalArgumentException("Fee UTXO not found");
+                feeInput = signer.buildInput(walletId, feeUtxo, master);
+            } else {
+                // Auto-select smallest spendable UTXO for fee
+                java.util.List<handshake.wallet.WalletDB.UtxoRecord> spendable =
+                        signer.getSpendableUtxos(walletId);
+                if (spendable.isEmpty())
+                    throw new IllegalStateException(
+                            "No spendable UTXOs for fee — need HNS balance");
+                spendable.sort((a, b) -> Long.compare(a.value, b.value));
+                feeInput = signer.buildInput(walletId, spendable.get(0), master);
+            }
+
+            // Build TRANSFER transaction
+            handshake.wallet.HNSTxBuilder.SignedTx tx =
+                    handshake.wallet.HNSTransferBuilder.buildTransfer(
+                            name, nameRec, nameUtxo.value,
+                            ownerAddrHash, ownerKey.privateKey, ownerKey.publicKey,
+                            recipientHash, feeInput);
+
+            System.out.printf("[API] TRANSFER .%s → %s txid=%s%n",
+                    name, toAddr, tx.txid);
+
+            // Broadcast
+            handshake.wallet.HNSBroadcaster.BroadcastResult result =
+                    handshake.wallet.HNSBroadcaster.broadcast(tx);
+
+            sendJson(ex, 200, String.format(
+                    "{\"ok\":true,\"txid\":\"%s\",\"fee\":%.6f," +
+                            "\"note\":\"Wait ~2 days (288 blocks) then finalize\"}",
+                    tx.txid, tx.fee / 1_000_000.0));
         }
 
         private void handleSend(com.sun.net.httpserver.HttpExchange ex,

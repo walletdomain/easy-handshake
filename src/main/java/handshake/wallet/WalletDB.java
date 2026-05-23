@@ -152,18 +152,27 @@ public class WalletDB implements AutoCloseable {
         public String name;
         public String walletId;
         public String ownerAddress;
-        public int    height;       // block height when name was registered
-        public int    expireHeight; // block height when name expires
-        public long   lastRenewed; // epoch ms
-        public String state;       // OPENING, BIDDING, REVEAL, CLOSED, EXPIRED
+        public int    height;        // block height of last covenant update
+        public int    expireHeight;  // block height when name expires
+        public long   lastRenewed;   // epoch ms
+        public String state;         // REGISTERED, TRANSFERRING, etc.
+        // Fields needed for TRANSFER/FINALIZE transactions:
+        public String nameHash;      // hex SHA3-256 of name (32 bytes)
+        public String utxoTxHash;    // hex txid of current name UTXO
+        public int    utxoIndex;     // output index of current name UTXO
+        public int    claimHeight;   // original registration height (items[1])
+        public int    renewalCount;  // number of renewals (items[5] in FINALIZE)
 
         public String toStorage() {
             return walletId + "|" + ownerAddress + "|" + height + "|"
-                    + expireHeight + "|" + lastRenewed + "|" + state;
+                    + expireHeight + "|" + lastRenewed + "|" + state + "|"
+                    + (nameHash != null ? nameHash : "") + "|"
+                    + (utxoTxHash != null ? utxoTxHash : "") + "|"
+                    + utxoIndex + "|" + claimHeight + "|" + renewalCount;
         }
 
         public static NameRecord fromStorage(String name, String s) {
-            String[] p = s.split("\\|", 6);
+            String[] p = s.split("\\|", 11);
             NameRecord r    = new NameRecord();
             r.name          = name;
             r.walletId      = p[0];
@@ -172,6 +181,11 @@ public class WalletDB implements AutoCloseable {
             r.expireHeight  = Integer.parseInt(p[3]);
             r.lastRenewed   = Long.parseLong(p[4]);
             r.state         = p[5];
+            r.nameHash      = p.length > 6  ? p[6]  : "";
+            r.utxoTxHash    = p.length > 7  ? p[7]  : "";
+            r.utxoIndex     = p.length > 8  ? Integer.parseInt(p[8])  : 0;
+            r.claimHeight   = p.length > 9  ? Integer.parseInt(p[9])  : r.height;
+            r.renewalCount  = p.length > 10 ? Integer.parseInt(p[10]) : 0;
             return r;
         }
 
@@ -309,6 +323,16 @@ public class WalletDB implements AutoCloseable {
         for (String s : utxos.values()) {
             UtxoRecord r = UtxoRecord.fromStorage(s);
             if (address.equals(r.address) && !r.spent) list.add(r);
+        }
+        return list;
+    }
+
+    /** Returns all UTXOs for an address including spent/locked ones (e.g. name UTXOs). */
+    public List<UtxoRecord> getAllUtxosForAddress(String address) {
+        List<UtxoRecord> list = new ArrayList<>();
+        for (String s : utxos.values()) {
+            UtxoRecord r = UtxoRecord.fromStorage(s);
+            if (address.equals(r.address)) list.add(r);
         }
         return list;
     }

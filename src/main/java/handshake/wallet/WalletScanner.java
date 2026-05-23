@@ -211,7 +211,7 @@ public class WalletScanner {
                 extendLookahead(walletId, addr, addrMap);
 
                 // Check for name covenants
-                processName(out, addr, walletId, height, txHash);
+                processName(out, addr, walletId, height, txHash, i);
             }
         }
     }
@@ -294,7 +294,8 @@ public class WalletScanner {
     // ── Name covenant processing ──────────────────────────────────────────────
 
     private void processName(HNSBlock.Output out, String addr,
-                             String walletId, int height, String txHash) {
+                             String walletId, int height, String txHash,
+                             int outputIndex) {
         if (out.covenant == null) return;
         int type = out.covenant.type;
         if (type != COV_REGISTER && type != COV_UPDATE &&
@@ -327,6 +328,9 @@ public class WalletScanner {
         } catch (Exception ignored) {}
         if (name == null || name.isEmpty()) return;
 
+        System.out.printf("[Scanner] processName: name=%s type=%d txHash=%s idx=%d%n",
+                name, type, txHash.substring(0, 12), outputIndex);
+
         WalletDB.NameRecord rec = walletDb.getName(name);
         if (rec == null) rec = new WalletDB.NameRecord();
         rec.name         = name;
@@ -339,10 +343,37 @@ public class WalletScanner {
             case COV_REGISTER -> "REGISTERED";
             case COV_UPDATE   -> "UPDATED";
             case COV_RENEW    -> "RENEWED";
-            case COV_TRANSFER -> "TRANSFERRING"; // 48hr lockup in progress
-            case COV_FINALIZE -> "REGISTERED";   // transfer completed — name is now owned
+            case COV_TRANSFER -> "TRANSFERRING";
+            case COV_FINALIZE -> "REGISTERED";
             default           -> "UNKNOWN";
         };
+
+        // Store UTXO location and covenant fields for TRANSFER/FINALIZE
+        rec.utxoTxHash  = txHash;
+        rec.utxoIndex   = outputIndex;
+        // nameHash = SHA3-256 of name bytes (items[0])
+        if (out.covenant.items.size() > 0) {
+            rec.nameHash = hex(out.covenant.items.get(0));
+        }
+        // claimHeight = items[1] as LE uint32
+        if (out.covenant.items.size() > 1) {
+            byte[] hb = out.covenant.items.get(1);
+            if (hb.length == 4)
+                rec.claimHeight = (hb[0] & 0xFF)
+                        | ((hb[1] & 0xFF) << 8)
+                        | ((hb[2] & 0xFF) << 16)
+                        | ((hb[3] & 0xFF) << 24);
+        }
+        // renewalCount = items[5] for FINALIZE, 0 otherwise
+        if (type == COV_FINALIZE && out.covenant.items.size() > 5) {
+            byte[] rb = out.covenant.items.get(5);
+            if (rb.length == 4)
+                rec.renewalCount = (rb[0] & 0xFF)
+                        | ((rb[1] & 0xFF) << 8)
+                        | ((rb[2] & 0xFF) << 16)
+                        | ((rb[3] & 0xFF) << 24);
+        }
+
         walletDb.saveName(rec);
         EventBus.get().name("Name found in wallet: ." + name + " → "
                 + addr.substring(0, 12) + "...");

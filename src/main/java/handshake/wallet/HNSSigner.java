@@ -111,7 +111,7 @@ public class HNSSigner {
      * Returns all spendable (unspent, non-locked, non-coinbase-immature) UTXOs.
      * Filters to NONE-covenant outputs only (spendable HNS).
      */
-    List<WalletDB.UtxoRecord> getSpendableUtxos(String walletId) {
+    public List<WalletDB.UtxoRecord> getSpendableUtxos(String walletId) {
         List<WalletDB.UtxoRecord> result = new ArrayList<>();
         for (WalletDB.AddressRecord addr :
                 walletDb.getAddressesForWallet(walletId)) {
@@ -171,9 +171,9 @@ public class HNSSigner {
      * Builds a UtxoInput for a UTXO by looking up the address's HD path
      * and deriving the private key.
      */
-    HNSTxBuilder.UtxoInput buildInput(String walletId,
-                                      WalletDB.UtxoRecord utxo,
-                                      BIP32.HDKey master) {
+    public HNSTxBuilder.UtxoInput buildInput(String walletId,
+                                             WalletDB.UtxoRecord utxo,
+                                             BIP32.HDKey master) {
         WalletDB.AddressRecord addrRec = findAddressRecord(walletId, utxo.address);
         if (addrRec == null)
             throw new IllegalStateException(
@@ -260,7 +260,7 @@ public class HNSSigner {
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
-    WalletDB.AddressRecord findAddressRecord(String walletId, String address) {
+    public WalletDB.AddressRecord findAddressRecord(String walletId, String address) {
         for (WalletDB.AddressRecord a : walletDb.getAddressesForWallet(walletId))
             if (a.address.equals(address)) return a;
         return null;
