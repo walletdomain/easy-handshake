@@ -174,6 +174,8 @@ public class ChainFollower {
                         // Check for pending FINALIZE transactions
                         if (walletManager != null)
                             checkPendingFinalizations(h, header.hash());
+                        // Decay peer scores to allow recovery over time
+                        PeerScorecard.get().applyDecay();
                         EventBus.get().block("Block " + h + " validated ✓ ("
                                 + block.txs.size() + " txs)");
                     } catch (SecurityException e) {

@@ -122,6 +122,101 @@
       color: var(--accent);
     }
 
+    /* DNS record rows */
+    .dns-record-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 0.35rem;
+      font-size: 0.78rem;
+    }
+    .dns-record-type {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--accent);
+      background: rgba(var(--accent-rgb, 100,200,150), 0.08);
+      border: 1px solid rgba(var(--accent-rgb, 100,200,150), 0.2);
+      border-radius: 3px;
+      padding: 0.1rem 0.35rem;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .dns-record-value {
+      flex: 1;
+      color: var(--text);
+      font-size: 0.75rem;
+      word-break: break-all;
+      font-family: 'Space Mono', monospace;
+    }
+    .dns-remove-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.75rem;
+      padding: 0.1rem 0.25rem;
+      border-radius: 3px;
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+    .dns-remove-btn:hover { color: #e05555; }
+    .dns-label {
+      display: block;
+      font-size: 0.62rem;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      font-family: 'Space Mono', monospace;
+      margin-bottom: 0.2rem;
+    }
+    .dns-field { display: flex; flex-direction: column; }
+
+    /* Name state badges */
+    .name-state {
+      font-size: 0.63rem;
+      letter-spacing: 0.06em;
+      padding: 0.15rem 0.45rem;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .name-state-registered {
+      color: #4cdb8a;
+      background: rgba(76,219,138,0.08);
+      border: 1px solid rgba(76,219,138,0.2);
+    }
+    .name-state-updated {
+      color: #4caadb;
+      background: rgba(76,170,219,0.08);
+      border: 1px solid rgba(76,170,219,0.2);
+    }
+    .name-state-renewed {
+      color: #4caadb;
+      background: rgba(76,170,219,0.08);
+      border: 1px solid rgba(76,170,219,0.2);
+    }
+    .name-state-transferring {
+      color: #f0a030;
+      background: rgba(240,160,48,0.08);
+      border: 1px solid rgba(240,160,48,0.2);
+    }
+    .name-state-ready-to-finalize {
+      color: #f0d030;
+      background: rgba(240,208,48,0.08);
+      border: 1px solid rgba(240,208,48,0.2);
+    }
+    .name-state-finalized {
+      color: #a0a0b0;
+      background: rgba(160,160,176,0.08);
+      border: 1px solid rgba(160,160,176,0.2);
+    }
+    .name-state-unknown {
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+
     /* Modal overlay */
     .modal-overlay {
       position:fixed; inset:0; background:rgba(0,0,0,0.7);
@@ -375,6 +470,68 @@
     <div class="modal-actions">
       <button class="btn-cancel" onclick="hideModals()">Cancel</button>
       <button class="btn-primary" onclick="unlockWallet()">Unlock</button>
+    </div>
+  </div>
+</div>
+
+<!-- DNS Management Modal -->
+<div class="modal-overlay hidden" id="dns-modal">
+  <div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title" id="dns-modal-title">DNS Records</div>
+    <div class="modal-sub">
+      Build the list of records below, then click Publish.
+      The list <strong>replaces</strong> all existing on-chain records —
+      existing records are pre-loaded so you can keep, edit, or remove them.
+      Records take effect after ~36 blocks (≈6 hours). Maximum 512 bytes total.
+    </div>
+
+    <div style="margin:1rem 0 0.5rem;font-size:0.65rem;letter-spacing:0.08em;
+                  color:var(--muted);font-family:'Space Mono',monospace">
+      RECORDS TO PUBLISH
+    </div>
+    <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.5rem">
+      These replace all existing on-chain records when published.
+    </div>
+    <div id="dns-records-list" style="min-height:2rem;margin-bottom:1rem"></div>
+
+    <!-- Add record form -->
+    <div style="border-top:1px solid var(--border);padding-top:1rem;margin-top:0.5rem">
+      <div style="font-size:0.65rem;letter-spacing:0.08em;color:var(--muted);
+                    font-family:'Space Mono',monospace;margin-bottom:0.5rem">
+        ADD RECORD
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap">
+        <select id="dns-type-select" class="modal-input"
+                style="width:auto;min-width:110px;flex-shrink:0"
+                onchange="onDnsTypeChange()">
+          <option value="">— Type —</option>
+          <option value="NS">NS</option>
+          <option value="GLUE4">GLUE4</option>
+          <option value="GLUE6">GLUE6</option>
+          <option value="SYNTH4">SYNTH4</option>
+          <option value="SYNTH6">SYNTH6</option>
+          <option value="DS">DS</option>
+          <option value="TXT">TXT</option>
+        </select>
+      </div>
+      <div id="dns-type-fields" style="margin-top:0.5rem;display:flex;
+             flex-direction:column;gap:0.5rem"></div>
+      <button class="btn-secondary" style="margin-top:0.75rem;max-width:160px"
+              onclick="addDnsRecord()">+ Stage Record</button>
+    </div>
+
+    <div class="modal-error hidden" id="dns-error"></div>
+    <div id="dns-success" class="hidden"
+         style="margin-top:0.75rem;padding:0.6rem 0.75rem;border-radius:4px;
+                  background:rgba(0,200,100,0.08);border:1px solid rgba(0,200,100,0.25);
+                  color:#4caf80;font-size:0.78rem;font-family:'Space Mono',monospace">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideDnsModal()">Cancel</button>
+      <button class="btn-primary" id="dns-submit-btn"
+              onclick="submitDnsUpdate()"
+              title="Stage at least one record first">Publish to Blockchain</button>
     </div>
   </div>
 </div>

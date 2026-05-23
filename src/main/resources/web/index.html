@@ -184,7 +184,17 @@
     </div>
 
     <!-- Peers panel -->
-    <div class="section-title peers-title">Peers</div>
+    <div class="section-title peers-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Peers</span>
+      <button onclick="resetPeers()" id="reset-peers-btn"
+              style="font-size:0.6rem;letter-spacing:0.06em;font-family:'Space Mono',monospace;
+                         background:transparent;border:1px solid var(--border);color:var(--muted);
+                         padding:0.15rem 0.5rem;border-radius:3px;cursor:pointer;transition:all 0.15s"
+              onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+        Reset
+      </button>
+    </div>
     <div class="peers-panel" id="peers-panel">
       <div class="peers-empty">Loading...</div>
     </div>

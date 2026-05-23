@@ -299,6 +299,57 @@ public class PeerScorecard {
         return sb.toString();
     }
 
+    /**
+     * Resets a single peer's backoff — lets us retry immediately.
+     * Does not change the score, just clears the backoff timer.
+     */
+    public void resetBackoff(String ip) {
+        PeerRecord r = getOrCreate(ip);
+        r.backoffUntil = 0;
+        r.backoffLevel = 0;
+        r.score = Math.max(r.score, SCORE_BACKOFF_THRESHOLD); // give it a chance
+        persist(r);
+        System.out.printf("[PeerScore] Reset backoff for %s%n", ip);
+    }
+
+    /** Resets backoffs for ALL backed-off peers so we retry them. */
+    public void resetAllBackoffs() {
+        for (PeerRecord r : getAllRecords()) {
+            if (r.isBackedOff() || r.isBlacklisted()) {
+                r.backoffUntil = 0;
+                r.backoffLevel = 0;
+                r.score = Math.max(r.score, SCORE_BACKOFF_THRESHOLD);
+                persist(r);
+            }
+        }
+        System.out.println("[PeerScore] All peer backoffs reset");
+    }
+
+    /**
+     * Applies time-based score decay/recovery.
+     * Called periodically — peers slowly recover score over time
+     * so transient failures don't permanently exclude good peers.
+     * +1 per 10 minutes for peers with score < 50.
+     */
+    public void applyDecay() {
+        long now = System.currentTimeMillis();
+        for (PeerRecord r : getAllRecords()) {
+            if (r.score < SCORE_INITIAL && r.lastFailureTime > 0) {
+                long minutesSinceFailure = (now - r.lastFailureTime) / 60_000;
+                int recovery = (int)(minutesSinceFailure / 10); // +1 per 10 min
+                if (recovery > 0) {
+                    r.score = Math.min(SCORE_INITIAL, r.score + recovery);
+                    // If score recovered above blacklist threshold, clear backoff
+                    if (r.score >= SCORE_BACKOFF_THRESHOLD && r.isBackedOff()
+                            && r.backoffLevel > 0) {
+                        r.backoffLevel = Math.max(0, r.backoffLevel - 1);
+                    }
+                    persist(r);
+                }
+            }
+        }
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private PeerRecord getOrCreate(String ip) {

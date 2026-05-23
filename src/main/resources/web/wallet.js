@@ -38,7 +38,14 @@ async function loadWallets() {
       // No wallets yet — show create/restore immediately
       showWelcomeState();
     } else {
-      selectWallet(wallets[0].id);
+      // Preserve active wallet selection if still valid, else select first
+      const stillActive = wallets.find(w => w.id === activeWalletId);
+      if (stillActive) {
+        renderSidebar();
+        selectWallet(activeWalletId); // refresh active wallet state
+      } else {
+        selectWallet(wallets[0].id);
+      }
     }
   } catch (err) {
     document.getElementById('wallet-main').innerHTML =
@@ -174,11 +181,15 @@ function renderSidebar() {
 
 async function selectWallet(id) {
   activeWalletId = id;
-  renderSidebar();
+  renderSidebar(); // render with current known state first
 
   try {
     const res  = await fetch('/api/wallet/' + id);
     const data = await res.json();
+    // Update the local wallets array with the fresh lock state
+    const idx = wallets.findIndex(w => w.id === id);
+    if (idx >= 0) wallets[idx].unlocked = data.unlocked;
+    renderSidebar(); // re-render sidebar with corrected lock state
     renderWalletMain(data);
   } catch (err) {
     document.getElementById('wallet-main').innerHTML =
@@ -434,8 +445,10 @@ function renderNamesTable() {
               </span>
             </td>
             <td style="padding:0.6rem 0.75rem;font-size:0.65rem;
-                       color:var(--muted);font-family:'Space Mono',monospace">
-              ${esc(n.state)}
+                       font-family:'Space Mono',monospace">
+              <span class="name-state name-state-${esc(n.state.toLowerCase().replace(/_/g,'-'))}">
+                ${esc(n.state)}
+              </span>
             </td>
             <td style="padding:0.6rem 0.75rem;white-space:nowrap">
               <button class="action-btn" onclick="transferName('${esc(n.name)}')">Transfer</button>
@@ -454,8 +467,239 @@ function sortNames(col) {
 }
 
 function transferName(name) { alert('Transfer .' + name + ' — coming soon'); }
-function manageDns(name)    { alert('DNS for .'  + name + ' — coming soon'); }
 function nameHistory(name)  { alert('History for .' + name + ' — coming soon'); }
+
+// ── DNS Management ────────────────────────────────────────────────────────────
+
+let dnsCurrentName = null;
+let dnsRecords = []; // current records being edited
+
+function manageDns(name) {
+  dnsCurrentName = name;
+  dnsRecords = [];
+  document.getElementById('dns-modal-title').textContent = 'DNS Records — .' + name;
+  document.getElementById('dns-error').classList.add('hidden');
+  document.getElementById('dns-success').classList.add('hidden');
+  document.getElementById('dns-records-list').innerHTML =
+      '<div style="color:var(--muted);font-size:0.78rem">Loading current records…</div>';
+  document.getElementById('dns-modal').classList.remove('hidden');
+
+  // Load current records from the chain
+  const wid = activeWalletId;
+  fetch(`/api/wallet/${wid}/dns/${encodeURIComponent(name)}`)
+      .then(r => r.json())
+      .then(data => {
+        dnsRecords = data.records || [];
+        renderDnsRecords();
+      })
+      .catch(() => {
+        dnsRecords = [];
+        renderDnsRecords();
+      });
+}
+
+function hideDnsModal() {
+  document.getElementById('dns-modal').classList.add('hidden');
+  dnsCurrentName = null;
+  dnsRecords = [];
+}
+
+function renderDnsRecords() {
+  const el = document.getElementById('dns-records-list');
+  const btn = document.getElementById('dns-submit-btn');
+  if (dnsRecords.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:0.78rem;padding:0.5rem 0">
+      No records staged yet. Use the form below to add records.</div>`;
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.45'; btn.title = 'Stage at least one record first'; }
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.title = ''; }
+  el.innerHTML = dnsRecords.map((r, i) => `
+    <div class="dns-record-row" id="dns-rec-${i}">
+      <span class="dns-record-type">${esc(r.type)}</span>
+      <span class="dns-record-value">${dnsRecordSummary(r)}</span>
+      <button class="dns-remove-btn" onclick="removeDnsRecord(${i})">✕</button>
+    </div>`).join('');
+}
+
+function dnsRecordSummary(r) {
+  switch (r.type) {
+    case 'NS':     return esc(r.ns);
+    case 'GLUE4':  return esc(r.ns) + ' → ' + esc(r.address);
+    case 'GLUE6':  return esc(r.ns) + ' → ' + esc(r.address);
+    case 'SYNTH4': return esc(r.address);
+    case 'SYNTH6': return esc(r.address);
+    case 'DS':     return `keyTag=${r.keyTag} alg=${r.algorithm} dt=${r.digestType}`;
+    case 'TXT':    return esc((r.txt || []).join(', '));
+    default:       return JSON.stringify(r);
+  }
+}
+
+function removeDnsRecord(i) {
+  dnsRecords.splice(i, 1);
+  renderDnsRecords();
+}
+
+function onDnsTypeChange() {
+  const type = document.getElementById('dns-type-select').value;
+  const fields = document.getElementById('dns-type-fields');
+
+  const input = (id, placeholder, label) =>
+      `<div class="dns-field">
+      <label class="dns-label">${label}</label>
+      <input class="modal-input" id="dns-${id}" placeholder="${placeholder}" autocomplete="off">
+    </div>`;
+
+  switch (type) {
+    case 'NS':
+      fields.innerHTML = input('ns', 'ns1.example.com.', 'Nameserver (FQDN with trailing dot)');
+      break;
+    case 'GLUE4':
+      fields.innerHTML = input('ns',      'ns1.example.com.', 'Nameserver (FQDN)')
+          + input('address', '1.2.3.4',          'IPv4 Address');
+      break;
+    case 'GLUE6':
+      fields.innerHTML = input('ns',      'ns1.example.com.', 'Nameserver (FQDN)')
+          + input('address', '2001:db8::1',       'IPv6 Address');
+      break;
+    case 'SYNTH4':
+      fields.innerHTML = input('address', '1.2.3.4', 'IPv4 Address');
+      break;
+    case 'SYNTH6':
+      fields.innerHTML = input('address', '2001:db8::1', 'IPv6 Address');
+      break;
+    case 'DS':
+      fields.innerHTML = input('keyTag',     '12345',  'Key Tag (0–65535)')
+          + input('algorithm',  '8',      'Algorithm (e.g. 8=RSA/SHA-256)')
+          + input('digestType', '2',      'Digest Type (e.g. 2=SHA-256)')
+          + input('digest',     'abcd1234…', 'Digest (hex)');
+      break;
+    case 'TXT':
+      fields.innerHTML = input('txt', 'v=spf1 include:example.com ~all', 'Text value');
+      break;
+    default:
+      fields.innerHTML = '';
+  }
+}
+
+function addDnsRecord() {
+  const type = document.getElementById('dns-type-select').value;
+  const val  = id => { const el = document.getElementById('dns-' + id); return el ? el.value.trim() : ''; };
+  const err  = msg => {
+    const el = document.getElementById('dns-error');
+    el.textContent = msg; el.classList.remove('hidden');
+  };
+
+  document.getElementById('dns-error').classList.add('hidden');
+
+  let rec = null;
+  switch (type) {
+    case 'NS': {
+      const ns = val('ns');
+      if (!ns) return err('Nameserver is required');
+      if (!ns.endsWith('.')) return err('Nameserver must end with a dot (.)');
+      rec = { type: 'NS', ns };
+      break;
+    }
+    case 'GLUE4': {
+      const ns = val('ns'), address = val('address');
+      if (!ns) return err('Nameserver is required');
+      if (!ns.endsWith('.')) return err('Nameserver must end with a dot (.)');
+      if (!address) return err('IPv4 address is required');
+      rec = { type: 'GLUE4', ns, address };
+      break;
+    }
+    case 'GLUE6': {
+      const ns = val('ns'), address = val('address');
+      if (!ns) return err('Nameserver is required');
+      if (!ns.endsWith('.')) return err('Nameserver must end with a dot (.)');
+      if (!address) return err('IPv6 address is required');
+      rec = { type: 'GLUE6', ns, address };
+      break;
+    }
+    case 'SYNTH4': {
+      const address = val('address');
+      if (!address) return err('IPv4 address is required');
+      rec = { type: 'SYNTH4', address };
+      break;
+    }
+    case 'SYNTH6': {
+      const address = val('address');
+      if (!address) return err('IPv6 address is required');
+      rec = { type: 'SYNTH6', address };
+      break;
+    }
+    case 'DS': {
+      const keyTag = parseInt(val('keyTag'));
+      const algorithm = parseInt(val('algorithm'));
+      const digestType = parseInt(val('digestType'));
+      const digest = val('digest');
+      if (isNaN(keyTag)) return err('Key tag must be a number');
+      if (isNaN(algorithm)) return err('Algorithm must be a number');
+      if (isNaN(digestType)) return err('Digest type must be a number');
+      if (!digest) return err('Digest is required');
+      rec = { type: 'DS', keyTag, algorithm, digestType, digest };
+      break;
+    }
+    case 'TXT': {
+      const txt = val('txt');
+      if (!txt) return err('Text value is required');
+      rec = { type: 'TXT', txt: [txt] };
+      break;
+    }
+    default:
+      return err('Select a record type');
+  }
+
+  dnsRecords.push(rec);
+  renderDnsRecords();
+  // Clear fields
+  document.getElementById('dns-type-fields').innerHTML = '';
+  document.getElementById('dns-type-select').value = '';
+}
+
+async function submitDnsUpdate() {
+  const btn = document.getElementById('dns-submit-btn');
+  document.getElementById('dns-error').classList.add('hidden');
+  document.getElementById('dns-success').classList.add('hidden');
+
+  if (dnsRecords.length === 0) {
+    const el = document.getElementById('dns-error');
+    el.textContent = 'Add at least one record before saving.';
+    el.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Publishing…';
+
+  try {
+    const resp = await fetch(`/api/wallet/${activeWalletId}/update-dns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: dnsCurrentName,
+        records: JSON.stringify(dnsRecords)
+      })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const el = document.getElementById('dns-success');
+      el.textContent = `✓ Published! txid: ${data.txid.substring(0,16)}… — records take effect after ~36 blocks`;
+      el.classList.remove('hidden');
+      btn.textContent = 'Publish to Blockchain';
+      btn.disabled = false;
+    } else {
+      throw new Error(data.error || 'Unknown error');
+    }
+  } catch (e) {
+    const el = document.getElementById('dns-error');
+    el.textContent = e.message;
+    el.classList.remove('hidden');
+    btn.textContent = 'Publish to Blockchain';
+    btn.disabled = false;
+  }
+}
 
 function expiryText(expireHeight) {
   const remaining = expireHeight - tipHeight;

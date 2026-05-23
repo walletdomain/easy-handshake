@@ -302,6 +302,7 @@ public class HNSPeerManager {
                 dnsServer.start();
                 follower.setDnsServer(dnsServer);
                 httpServer.setNameIndex(dnsServer.getNameIndex());
+                httpServer.setDnsServer(dnsServer);
                 // Apply upstream DNS override if configured
                 String upstream = cfg.dnsUpstream();
                 if (!upstream.isBlank())

@@ -255,6 +255,19 @@ function renderPeers(peers) {
   }).join('');
 }
 
+async function resetPeers() {
+  const btn = document.getElementById('reset-peers-btn');
+  btn.textContent = '…';
+  try {
+    await fetch('/api/peers/reset', { method: 'POST' });
+    await refreshPeers();
+    btn.textContent = '✓ Reset';
+    setTimeout(() => btn.textContent = 'Reset', 2000);
+  } catch (e) {
+    btn.textContent = 'Reset';
+  }
+}
+
 // Poll peers every 30 seconds
 setInterval(refreshPeers, 30_000);
 refreshPeers();

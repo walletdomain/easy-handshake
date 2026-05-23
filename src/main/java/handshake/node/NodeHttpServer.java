@@ -66,6 +66,7 @@ public class NodeHttpServer {
     private handshake.node.dns.NameIndex nameIndex;
     private handshake.wallet.WalletManager walletManager;
     private handshake.wallet.WalletScanner walletScanner;
+    private handshake.node.dns.DnsServer   dnsServer;
     private final Config config;
     private HttpServer server;
 
@@ -79,6 +80,10 @@ public class NodeHttpServer {
 
     public void setWalletScanner(handshake.wallet.WalletScanner ws) {
         this.walletScanner = ws;
+    }
+
+    public void setDnsServer(handshake.node.dns.DnsServer dns) {
+        this.dnsServer = dns;
     }
 
     public NodeHttpServer(Database db, int port, String version) {
@@ -581,6 +586,16 @@ public class NodeHttpServer {
                 } else if (path.endsWith("/send") && method.equals("POST")) {
                     String id = extractWalletId(path, "/send");
                     handleSend(exchange, id, body);
+                    // GET /api/wallet/{id}/dns/{name}
+                } else if (path.contains("/dns/") && method.equals("GET")) {
+                    String[] parts = path.split("/dns/");
+                    String wid  = parts[0].substring("/api/wallet/".length());
+                    String dnsName = parts[1];
+                    handleGetDns(exchange, wid, dnsName);
+                    // POST /api/wallet/{id}/update-dns
+                } else if (path.endsWith("/update-dns") && method.equals("POST")) {
+                    String id = extractWalletId(path, "/update-dns");
+                    handleUpdateDns(exchange, id, body);
                     // POST /api/wallet/{id}/watch-transfer
                 } else if (path.endsWith("/watch-transfer") && method.equals("POST")) {
                     String id = extractWalletId(path, "/watch-transfer");
@@ -671,6 +686,188 @@ public class NodeHttpServer {
             }
             sb.append("]}");
             sendJson(ex, 200, sb.toString());
+        }
+
+        private void handleGetDns(com.sun.net.httpserver.HttpExchange ex,
+                                  String walletId, String name) throws Exception {
+            handshake.wallet.WalletDB walletDb = walletManager.getWalletDB();
+            handshake.wallet.WalletDB.NameRecord nameRec = walletDb.getName(name);
+            if (nameRec == null)
+                throw new IllegalArgumentException("Name not found: " + name);
+
+            byte[] resourceData = null;
+            if (dnsServer != null && dnsServer.isNameIndexReady()) {
+                resourceData = dnsServer.getNameIndex().lookup(name);
+            }
+
+            java.util.List<handshake.wallet.HNSResource.Record> records =
+                    resourceData != null
+                            ? handshake.wallet.HNSResource.decode(resourceData)
+                            : new java.util.ArrayList<>();
+
+            sendJson(ex, 200, String.format(
+                    "{\"name\":\"%s\",\"records\":%s}",
+                    name, handshake.wallet.HNSResource.toJson(records)));
+        }
+
+        private void handleUpdateDns(com.sun.net.httpserver.HttpExchange ex,
+                                     String walletId, String body) throws Exception {
+            String name    = extractJsonString(body, "name");
+            String records = extractJsonString(body, "records"); // JSON array
+
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("name is required");
+            if (records == null || records.isBlank())
+                throw new IllegalArgumentException("records is required");
+
+            handshake.wallet.BIP32.HDKey master = walletManager.getMasterKey(walletId);
+            if (master == null)
+                throw new IllegalStateException("Wallet locked");
+
+            handshake.wallet.WalletDB walletDb = walletManager.getWalletDB();
+            handshake.wallet.WalletDB.NameRecord nameRec = walletDb.getName(name);
+            if (nameRec == null || !nameRec.walletId.equals(walletId))
+                throw new IllegalArgumentException("Name '" + name + "' not found");
+            if (nameRec.utxoTxHash == null || nameRec.utxoTxHash.isEmpty())
+                throw new IllegalStateException("Name UTXO not found — rescan wallet");
+
+            // Parse records from JSON array
+            java.util.List<handshake.wallet.HNSResource.Record> recs =
+                    parseResourceRecords(records);
+
+            // Derive owner key
+            handshake.wallet.HNSSigner signer =
+                    new handshake.wallet.HNSSigner(walletManager, walletDb);
+            handshake.wallet.WalletDB.AddressRecord addrRec =
+                    signer.findAddressRecord(walletId, nameRec.ownerAddress);
+            if (addrRec == null)
+                throw new IllegalStateException("Owner address not found");
+
+            handshake.wallet.BIP32.HDKey ownerKey =
+                    handshake.wallet.BIP32.deriveAddress(
+                            master, addrRec.account, addrRec.change, addrRec.index);
+            byte[] ownerAddrHash =
+                    handshake.wallet.HNSAddress.decode(nameRec.ownerAddress);
+
+            // Get name UTXO value
+            handshake.wallet.WalletDB.UtxoRecord nameUtxo = null;
+            for (handshake.wallet.WalletDB.UtxoRecord u :
+                    walletDb.getAllUtxosForAddress(nameRec.ownerAddress)) {
+                if (u.txHash.equals(nameRec.utxoTxHash)
+                        && u.outputIndex == nameRec.utxoIndex) {
+                    nameUtxo = u; break;
+                }
+            }
+            if (nameUtxo == null)
+                throw new IllegalStateException("Name UTXO not found in DB");
+
+            // Select fee UTXO
+            java.util.List<handshake.wallet.WalletDB.UtxoRecord> spendable =
+                    signer.getSpendableUtxos(walletId);
+            if (spendable.isEmpty())
+                throw new IllegalStateException("No spendable UTXOs for fee");
+            spendable.sort((a, b) -> Long.compare(a.value, b.value));
+            handshake.wallet.HNSTxBuilder.UtxoInput feeInput =
+                    signer.buildInput(walletId, spendable.get(0), master);
+
+            // Build UPDATE transaction
+            handshake.wallet.HNSTxBuilder.SignedTx tx =
+                    handshake.wallet.HNSUpdateBuilder.buildUpdate(
+                            nameRec, nameUtxo.value,
+                            ownerAddrHash, ownerKey.privateKey, ownerKey.publicKey,
+                            recs, feeInput);
+
+            System.out.printf("[API] UPDATE .%s txid=%s records=%d%n",
+                    name, tx.txid, recs.size());
+
+            handshake.wallet.HNSBroadcaster.broadcast(tx);
+
+            sendJson(ex, 200, String.format(
+                    "{\"ok\":true,\"txid\":\"%s\",\"fee\":%.6f,\"records\":%d}",
+                    tx.txid, tx.fee / 1_000_000.0, recs.size()));
+        }
+
+        /** Parses a JSON array of resource record objects. */
+        private java.util.List<handshake.wallet.HNSResource.Record> parseResourceRecords(
+                String json) {
+            java.util.List<handshake.wallet.HNSResource.Record> list = new java.util.ArrayList<>();
+            // Simple JSON parser for our record format
+            // Each record: {"type":"NS","ns":"..."} etc.
+            int pos = 0;
+            while (pos < json.length()) {
+                int start = json.indexOf('{', pos);
+                if (start < 0) break;
+                int end = json.indexOf('}', start);
+                if (end < 0) break;
+                String obj = json.substring(start, end + 1);
+                pos = end + 1;
+                String type = extractJsonString(obj, "type");
+                if (type == null) continue;
+                try {
+                    switch (type.toUpperCase()) {
+                        case "NS" -> {
+                            String ns = extractJsonString(obj, "ns");
+                            if (ns != null) list.add(new handshake.wallet.HNSResource.NSRecord(ns));
+                        }
+                        case "GLUE4" -> {
+                            String ns   = extractJsonString(obj, "ns");
+                            String addr = extractJsonString(obj, "address");
+                            if (ns != null && addr != null)
+                                list.add(new handshake.wallet.HNSResource.GLUE4Record(ns, addr));
+                        }
+                        case "GLUE6" -> {
+                            String ns   = extractJsonString(obj, "ns");
+                            String addr = extractJsonString(obj, "address");
+                            if (ns != null && addr != null)
+                                list.add(new handshake.wallet.HNSResource.GLUE6Record(ns, addr));
+                        }
+                        case "SYNTH4" -> {
+                            String addr = extractJsonString(obj, "address");
+                            if (addr != null)
+                                list.add(new handshake.wallet.HNSResource.SYNTH4Record(addr));
+                        }
+                        case "SYNTH6" -> {
+                            String addr = extractJsonString(obj, "address");
+                            if (addr != null)
+                                list.add(new handshake.wallet.HNSResource.SYNTH6Record(addr));
+                        }
+                        case "DS" -> {
+                            String kt  = extractJsonString(obj, "keyTag");
+                            String alg = extractJsonString(obj, "algorithm");
+                            String dt  = extractJsonString(obj, "digestType");
+                            String dig = extractJsonString(obj, "digest");
+                            if (kt != null && alg != null && dt != null && dig != null)
+                                list.add(new handshake.wallet.HNSResource.DSRecord(
+                                        Integer.parseInt(kt), Integer.parseInt(alg),
+                                        Integer.parseInt(dt), handshake.wallet.HNSResource.fromHex(dig)));
+                        }
+                        case "TXT" -> {
+                            // Extract txt array — simple approach
+                            int ta = obj.indexOf("\"txt\"");
+                            if (ta >= 0) {
+                                int tb = obj.indexOf('[', ta);
+                                int tc = obj.indexOf(']', tb);
+                                if (tb >= 0 && tc >= 0) {
+                                    String arr = obj.substring(tb + 1, tc);
+                                    java.util.List<String> txts = new java.util.ArrayList<>();
+                                    int tp = 0;
+                                    while (tp < arr.length()) {
+                                        int q1 = arr.indexOf('"', tp);
+                                        if (q1 < 0) break;
+                                        int q2 = arr.indexOf('"', q1 + 1);
+                                        if (q2 < 0) break;
+                                        txts.add(arr.substring(q1 + 1, q2));
+                                        tp = q2 + 1;
+                                    }
+                                    if (!txts.isEmpty())
+                                        list.add(new handshake.wallet.HNSResource.TXTRecord(txts));
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+            return list;
         }
 
         private void handleWatchTransfer(com.sun.net.httpserver.HttpExchange ex,
@@ -1143,7 +1340,20 @@ public class NodeHttpServer {
         @Override
         public void handle(com.sun.net.httpserver.HttpExchange exchange)
                 throws IOException {
-            // Merge scored peers with all known peers (seeds + discovered)
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+
+            // POST /api/peers/reset — clear all backoffs
+            if (exchange.getRequestMethod().equals("POST")
+                    && exchange.getRequestURI().getPath().endsWith("/reset")) {
+                PeerScorecard.get().resetAllBackoffs();
+                byte[] body = "{\"ok\":true,\"message\":\"All peer backoffs cleared\"}"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+                exchange.close();
+                return;
+            }
             StringBuilder sb = new StringBuilder("[");
             boolean first = true;
 
