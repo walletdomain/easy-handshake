@@ -1,5 +1,6 @@
 package handshake.node;
 
+import handshake.wallet.HNSTxBuilder;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
@@ -321,9 +322,20 @@ public class HNSPeer {
                     case HNSMessage.TYPE_PING:
                         handlePing(msg.payload);
                         break;
+                    case HNSMessage.TYPE_INV:
+                        handleInv(msg.payload);
+                        break;
+                    case HNSMessage.TYPE_TX:
+                        handleTxMessage(msg.payload);
+                        break;
+                    case HNSMessage.TYPE_GETDATA:
+                        handleGetData(msg.payload);
+                        break;
+                    case HNSMessage.TYPE_MEMPOOL:
+                        handleMempool();
+                        break;
                     default:
-                        // Silently consume unsolicited messages (SENDCMPCT, INV, etc.)
-                        // The nonce is correctly incremented by readMessage() for all types
+                        // Silently consume unsolicited messages (SENDCMPCT, etc.)
                         break;
                 }
             }
@@ -536,7 +548,106 @@ public class HNSPeer {
         send(HNSMessage.TYPE_TX, rawTx);
     }
 
-    void send(int type, byte[] payload) throws Exception {
+    /**
+     * Sends an INV message announcing transaction hashes to this peer.
+     * The peer will respond with GETDATA for any txs it wants.
+     */
+    public void sendInvTx(List<byte[]> txHashes) throws Exception {
+        if (txHashes.isEmpty()) return;
+        send(HNSMessage.TYPE_INV, HNSMempool.buildInvTx(txHashes));
+    }
+
+    /**
+     * Handles an incoming INV message from a peer.
+     * For TX items we don't have: request via GETDATA.
+     * For BLOCK items: handled by block sync (ignored here).
+     */
+    public void handleInv(byte[] payload) throws Exception {
+        List<HNSMempool.InvItem> items = HNSMempool.parseInv(payload);
+        List<byte[]> want = new ArrayList<>();
+        for (HNSMempool.InvItem item : items) {
+            if (!item.isTx()) continue;
+            String txid = HNSTxBuilder.toHex(item.hash);
+            if (!HNSMempool.get().hasSeenTx(txid)) {
+                want.add(item.hash);
+                System.out.printf("[Mempool] Requesting tx %s... from %s%n",
+                        txid.substring(0, 12), peer.seed.ipAddress());
+            }
+        }
+        if (!want.isEmpty())
+            send(HNSMessage.TYPE_GETDATA, HNSMempool.buildGetDataTx(want));
+    }
+
+    /**
+     * Handles an incoming TX message from a peer.
+     * Parses, adds to mempool, and announces to other peers.
+     */
+    public void handleTxMessage(byte[] payload) {
+        try {
+            HNSBlock.Tx tx = HNSBlock.Tx.parse(payload, 0);
+            // Compute txid = blake2b(base tx)
+            byte[] base   = java.util.Arrays.copyOf(payload, tx.baseSize);
+            byte[] txidRaw = Blake2b.hash(base, 32);
+            String txid   = HNSTxBuilder.toHex(txidRaw);
+            boolean added = HNSMempool.get().addTx(payload, txid, true);
+            if (added)
+                System.out.printf("[Mempool] Received tx %s... from %s%n",
+                        txid.substring(0, 16), peer.seed.ipAddress());
+        } catch (Exception e) {
+            System.out.printf("[Mempool] Failed to handle TX from %s: %s%n",
+                    peer.seed.ipAddress(), e.getMessage());
+        }
+    }
+
+    /**
+     * Handles an incoming GETDATA message from a peer.
+     * For TX requests: send from our mempool if we have it.
+     */
+    public void handleGetData(byte[] payload) throws Exception {
+        List<HNSMempool.InvItem> items = HNSMempool.parseInv(payload);
+        for (HNSMempool.InvItem item : items) {
+            if (!item.isTx()) continue;
+            String txid  = HNSTxBuilder.toHex(item.hash);
+            byte[] rawTx = HNSMempool.get().getRawTx(txid);
+            if (rawTx != null) {
+                send(HNSMessage.TYPE_TX, rawTx);
+                System.out.printf("[Mempool] Served tx %s... to %s%n",
+                        txid.substring(0, 12), peer.seed.ipAddress());
+            } else {
+                // Send NOTFOUND
+                send(HNSMessage.TYPE_NOTFOUND,
+                        HNSMempool.buildInvTx(List.of(item.hash)));
+            }
+        }
+    }
+
+    /**
+     * Handles an incoming MEMPOOL message.
+     * Respond with INV of all our mempool txids.
+     */
+    public void handleMempool() throws Exception {
+        List<String> txids = HNSMempool.get().getSnapshot();
+        if (txids.isEmpty()) return;
+        List<byte[]> hashes = new ArrayList<>();
+        for (String txid : txids) {
+            byte[] hash = fromHex(txid);
+            if (hash != null) hashes.add(hash);
+        }
+        System.out.printf("[Mempool] MEMPOOL request from %s — sending %d txids%n",
+                peer.seed.ipAddress(), hashes.size());
+        sendInvTx(hashes);
+    }
+
+    private static byte[] fromHex(String hex) {
+        try {
+            byte[] b = new byte[hex.length() / 2];
+            for (int i = 0; i < b.length; i++)
+                b[i] = (byte) Integer.parseInt(hex.substring(i*2, i*2+2), 16);
+            return b;
+        } catch (Exception e) { return null; }
+    }
+
+    public void send(int type, byte[] payload) throws Exception {
         byte[] framed    = HNSMessage.frame(type, payload);
         byte[] encrypted = brontide.encryptMessage(framed);
         out.write(encrypted);
@@ -547,7 +658,7 @@ public class HNSPeer {
     // Receive helpers
     // -------------------------------------------------------------------------
 
-    HNSMessage.Message readMessage() throws Exception {
+    public HNSMessage.Message readMessage() throws Exception {
         // Read 20-byte brontide transport header: encLen(4 LE) + lenTag(16)
         byte[] header = in.readNBytes(BrontideState.HEADER_SIZE);
         if (header.length != BrontideState.HEADER_SIZE)

@@ -328,6 +328,20 @@ public class HNSPeerManager {
                 // Start scan if wallets exist
                 handshake.wallet.WalletScanner.get().startScan();
 
+                // Configure relay node for reliable transaction broadcast
+                String relayUrl    = cfg.getRelayNodeUrl();
+                String relayApiKey = cfg.getRelayNodeApiKey();
+                if (relayUrl == null || relayUrl.isBlank()) {
+                    // Seed defaults — can be changed in Settings
+                    relayUrl    = "http://74.208.31.75:12037";
+                    relayApiKey = "cjmgFfqYKxL79n5hJCW2tBQvR4pduNr8";
+                    cfg.set("relay.node.url",    relayUrl);
+                    cfg.set("relay.node.apikey", relayApiKey);
+                }
+                if (relayUrl != null && !relayUrl.isBlank()) {
+                    handshake.wallet.HNSBroadcaster.setRelayNode(relayUrl, relayApiKey);
+                }
+
                 System.out.println("Wallet:        "
                         + (walletManager.hasWallets()
                         ? walletManager.getAllWallets().size()

@@ -241,6 +241,16 @@ public class Config implements AutoCloseable {
         return "true".equalsIgnoreCase(val);
     }
 
+    /** Gets the relay node URL for transaction broadcast (e.g. http://74.208.31.75:12037). */
+    public String getRelayNodeUrl() {
+        return get("relay.node.url", null);
+    }
+
+    /** Gets the relay node API key for transaction broadcast. */
+    public String getRelayNodeApiKey() {
+        return get("relay.node.apikey", null);
+    }
+
     /** Sets a config value and persists immediately. */
     public void set(String key, String value) {
         settings.put(key, value);

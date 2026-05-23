@@ -3,6 +3,7 @@ package handshake.node;
 import handshake.database.Database;
 
 import java.math.BigInteger;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 
@@ -169,8 +170,9 @@ public class ApiHandler {
             case "getblockheader"     -> rpcGetBlockHeader(params);
 
             // ── Transactions ──────────────────────────────────────────────
-            case "getrawtransaction"  -> rpcGetRawTransaction(params);
+            case "getrawtransaction"    -> rpcGetRawTransaction(params);
             case "decoderawtransaction" -> rpcDecodeRawTransaction(params);
+            case "sendrawtransaction"   -> rpcSendRawTransaction(params);
 
             // ── UTXO ──────────────────────────────────────────────────────
             case "gettxout"           -> rpcGetTxOut(params);
@@ -180,8 +182,8 @@ public class ApiHandler {
             case "getinfo"            -> rpcGetInfo();
             case "getnetworkinfo"     -> rpcGetNetworkInfo();
             case "getconnectioncount" -> "0";
-            case "getpeerinfo",
-                 "getrawmempool"      -> "[]"; // no peers tracked yet; mempool not implemented
+            case "getpeerinfo"        -> "[]";
+            case "getrawmempool"      -> rpcGetRawMempool();
 
             // ── Mempool stubs ─────────────────────────────────────────────
             case "getmempoolinfo"     -> json(
@@ -309,6 +311,46 @@ public class ApiHandler {
         } catch (Exception e) {
             throw new RpcException("Could not decode transaction: " + e.getMessage(), -22);
         }
+    }
+
+    private String rpcGetRawMempool() {
+        java.util.List<String> txids = handshake.node.HNSMempool.get().getSnapshot();
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < txids.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append("\"").append(txids.get(i)).append("\"");
+        }
+        return sb.append("]").toString();
+    }
+
+    private String rpcSendRawTransaction(List<Object> params) {
+        if (params.isEmpty()) throw new RpcException("rawhex required", -8);
+        byte[] raw = fromHex(str(params.getFirst()));
+        if (raw == null) throw new RpcException("Invalid hex", -8);
+
+        // Parse to verify it's a valid transaction
+        HNSBlock.Tx tx;
+        try {
+            tx = HNSBlock.Tx.parse(raw, 0);
+        } catch (Exception e) {
+            throw new RpcException("Could not decode transaction: " + e.getMessage(), -22);
+        }
+
+        // Compute txid
+        String txid = toHex(computeTxId(tx));
+
+        // Broadcast to peers
+        handshake.wallet.HNSTxBuilder.SignedTx signed =
+                new handshake.wallet.HNSTxBuilder.SignedTx(raw, txid, 0);
+        handshake.wallet.HNSBroadcaster.BroadcastResult result =
+                handshake.wallet.HNSBroadcaster.broadcast(signed);
+
+        if (result.success)
+            return q(txid);
+        else
+            throw new RpcException(
+                    "Broadcast failed: " + (result.errorMessage != null
+                            ? result.errorMessage : "no peers accepted"), -25);
     }
 
     private String rpcGetTxOut(List<Object> params) {
